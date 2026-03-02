@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>So sánh CNN và MobileNet</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="bg"></div>
+    <main class="wrap">
+      <header class="hero">
+        <div class="hero-text">
+          <div class="badge">Fruit Quality Compare</div>
+          <h1>CNN vs MobileNet</h1>
+          <p>Tải ảnh hoặc video một lần, hệ thống hiển thị kết quả CNN và MobileNet để so sánh.</p>
+        </div>
+      </header>
+
+      <section class="control-card card">
+        <div class="card-head">
+          <h2>Dữ liệu đầu vào</h2>
+          <p>Chọn loại dữ liệu rồi tải tệp lên.</p>
+        </div>
+        <div class="card-body">
+          <div class="mode-switch">
+            <label class="mode-item">
+              <input type="radio" name="uploadMode" value="image" checked />
+              <span>Ảnh</span>
+            </label>
+            <label class="mode-item">
+              <input type="radio" name="uploadMode" value="video" />
+              <span>Video</span>
+            </label>
+          </div>
+          <input id="fileInput" type="file" accept="image/*" />
+          <button id="predictBtn">Dự đoán</button>
+          <div class="hint" id="inputHint">Đang ở chế độ ảnh.</div>
+          <div id="globalResult" class="result empty">Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.</div>
+        </div>
+      </section>
+
+      <section class="io-layout">
+        <article class="card io-card">
+          <div class="card-head">
+            <h2>Input</h2>
+            <p>Ảnh/video đầu vào cho từng model.</p>
+          </div>
+          <div class="panel-stack">
+            <div class="model-block">
+              <h3>CNN</h3>
+              <div class="preview-wrap">
+                <img id="cnnInputImage" class="preview hidden" alt="CNN input image" />
+                <video id="cnnInputVideo" class="preview hidden" controls></video>
+              </div>
+            </div>
+            <div class="model-block">
+              <h3>MobileNet</h3>
+              <div class="preview-wrap">
+                <img id="mobileInputImage" class="preview hidden" alt="MobileNet input image" />
+                <video id="mobileInputVideo" class="preview hidden" controls></video>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="card io-card">
+          <div class="card-head">
+            <h2>Output</h2>
+            <p>Kết quả dự đoán để so sánh.</p>
+          </div>
+          <div class="panel-stack">
+            <div class="model-block">
+              <h3>CNN</h3>
+              <div class="preview-wrap">
+                <img id="cnnOutputImage" class="preview hidden" alt="CNN output image" />
+                <video id="cnnOutputVideo" class="preview hidden" controls></video>
+              </div>
+              <div class="model-result" id="cnnResult">
+                <div>Quả: <strong id="cnnFruit">-</strong></div>
+                <div>Chất lượng: <strong id="cnnQuality">-</strong></div>
+                <div>Độ tin cậy: <strong id="cnnConfidence">-</strong></div>
+                <div>Số lượng: <strong id="cnnCounts">tươi 0 / hỏng 0</strong></div>
+                <div>Số khung hình mẫu: <strong id="cnnSampled">0</strong></div>
+              </div>
+            </div>
+            <div class="model-block">
+              <h3>MobileNet</h3>
+              <div class="preview-wrap">
+                <img id="mobileOutputImage" class="preview hidden" alt="MobileNet output image" />
+                <video id="mobileOutputVideo" class="preview hidden" controls></video>
+              </div>
+              <div class="model-result" id="mobileResult">
+                <div>Quả: <strong id="mobileFruit">-</strong></div>
+                <div>Chất lượng: <strong id="mobileQuality">-</strong></div>
+                <div>Độ tin cậy: <strong id="mobileConfidence">-</strong></div>
+                <div>Số lượng: <strong id="mobileCounts">tươi 0 / hỏng 0</strong></div>
+                <div>Số khung hình mẫu: <strong id="mobileSampled">0</strong></div>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/static/app.js?v=17"></script>
+  </body>
+</html>
