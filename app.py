@@ -11,7 +11,7 @@ import numpy as np
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import tensorflow as tf
 
 try:
@@ -47,6 +47,7 @@ _class_names: List[str] = []
 _label_to_idx: Dict[str, int] = {}
 _idx_to_label: Dict[int, str] = {}
 _detector: YOLO | None = None
+_font = ImageFont.load_default()
 
 
 @app.exception_handler(Exception)
@@ -116,6 +117,42 @@ def preprocess_image(img: Image.Image) -> np.ndarray:
     img = img.convert("RGB").resize(IMAGE_SIZE)
     arr = np.asarray(img, dtype=np.float32) / 255.0
     return np.expand_dims(arr, axis=0)
+
+def render_annotated(image: Image.Image, detections: List[dict]) -> str:
+    """Vẽ box + nhãn fruit_quality lên ảnh, trả về data URL base64."""
+    if not detections:
+        return ""
+    img = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(img)
+    for det in detections:
+        box = det["detection"]["box"]
+        fruit = det["detection"]["label"]
+        # lấy quality từ mobilenet nếu có, nếu không lấy quality của model đầu tiên
+        quality = None
+        if det.get("models"):
+            if "mobilenet" in det["models"]:
+                quality = det["models"]["mobilenet"].get("quality")
+            if quality is None:
+                first_model = next(iter(det["models"].values()))
+                quality = first_model.get("quality")
+        label = f"{fruit}_{quality}" if quality else fruit
+        x1, y1, x2, y2 = box
+        draw.rectangle([x1, y1, x2, y2], outline=(0, 200, 0), width=3)
+        text = label
+        try:
+            bbox = draw.textbbox((0, 0), text, font=_font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = _font.getsize(text)
+        draw.rectangle([x1, y1 - th - 4, x1 + tw + 6, y1], fill=(0, 0, 0, 180))
+        draw.text((x1 + 3, y1 - th - 2), text, fill=(255, 255, 255), font=_font)
+    import base64
+    import io
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
 
 
 def _activation_name(model: tf.keras.Model) -> str | None:
@@ -312,11 +349,10 @@ async def predict_image(file: UploadFile = File(...)):
         if not det_list:
             return JSONResponse({"error": f"No fruits detected by YOLO. max_conf={max_conf:.3f}", "debug": dbg}, status_code=400)
 
-        # Lấy nhãn có confidence cao nhất, chỉ giữ các box cùng nhãn và conf >= 0.6
-        top_label = det_list[0]["det_label"]
-        filtered = [d for d in det_list if d["det_label"] == top_label and d["det_confidence"] >= 0.6]
+        # Giữ mọi box có conf >= 0.7
+        filtered = [d for d in det_list if d["det_confidence"] >= 0.76]
         if not filtered:
-            filtered = [det_list[0]]
+            filtered = det_list
 
         detections = []
         fruit_counts = {}
@@ -357,12 +393,15 @@ async def predict_image(file: UploadFile = File(...)):
                 m["quality_counts"] = total_qc
                 m["crop_count"] = crop_count
 
+        annotated_image = render_annotated(img, detections)
+
         return {
             "mode": "image",
             "detections": detections,
             "fruit_counts": fruit_counts,
             "sampled_frames": 1,
             "main_detection": main_detection,
+            "annotated_image": annotated_image,
             "debug": dbg,
         }
     except Exception as exc:

@@ -30,7 +30,7 @@ body {
 }
 
 .wrap {
-  max-width: 1120px;
+  max-width: 1500px;
   margin: 0 auto;
   padding: 28px 18px 40px;
 }
@@ -127,6 +127,18 @@ button {
   grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
+.io-layout.single {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 18px;
+}
+
+.io-card {
+  width: 100%;
+}
+.io-layout.single .io-card {
+  width: 100%;
+}
 
 .panel-stack {
   display: grid;
@@ -138,6 +150,16 @@ button {
   font-size: 16px;
   color: var(--accent);
 }
+.model-switch {
+  display: inline-flex;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #d9ccb7;
+  border-radius: 10px;
+  background: #fff;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
 
 .preview-wrap {
   border: 1px dashed #d9ccb7;
@@ -145,6 +167,9 @@ button {
   padding: 8px;
   min-height: 210px;
   background: #fffdf8;
+}
+.preview-wrap.full-height {
+  min-height: 1000px;
 }
 
 .preview {
@@ -158,9 +183,17 @@ img.preview {
   max-height: 280px;
   object-fit: contain;
 }
+.preview-wrap.full-height img.preview {
+  max-height: 1400px;
+  width: 100%;
+}
 
 video.preview {
   max-height: 280px;
+}
+.preview-wrap.full-height video.preview {
+  max-height: 1400px;
+  width: 100%;
 }
 
 .model-result {

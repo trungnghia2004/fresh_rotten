@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>So sánh CNN và MobileNet</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v=22" />
   </head>
   <body>
     <div class="bg"></div>
@@ -40,25 +40,17 @@
         </div>
       </section>
 
-      <section class="io-layout">
+      <section class="io-layout single">
         <article class="card io-card">
           <div class="card-head">
             <h2>Input</h2>
-            <p>Ảnh/video đầu vào cho từng model.</p>
+            <p>Ảnh/video đầu vào.</p>
           </div>
           <div class="panel-stack">
             <div class="model-block">
-              <h3>CNN</h3>
               <div class="preview-wrap">
-                <img id="cnnInputImage" class="preview hidden" alt="CNN input image" />
-                <video id="cnnInputVideo" class="preview hidden" controls></video>
-              </div>
-            </div>
-            <div class="model-block">
-              <h3>MobileNet</h3>
-              <div class="preview-wrap">
-                <img id="mobileInputImage" class="preview hidden" alt="MobileNet input image" />
-                <video id="mobileInputVideo" class="preview hidden" controls></video>
+                <img id="inputImage" class="preview hidden" alt="Input image" />
+                <video id="inputVideo" class="preview hidden" controls></video>
               </div>
             </div>
           </div>
@@ -67,31 +59,20 @@
         <article class="card io-card">
           <div class="card-head">
             <h2>Output</h2>
-            <p>Kết quả dự đoán để so sánh.</p>
+            <p>Ảnh kèm box và nhãn. Chọn model để xem thống kê.</p>
+          </div>
+          <div class="model-switch">
+            <label><input type="radio" name="modelPick" value="cnn" checked /> CNN</label>
+            <label><input type="radio" name="modelPick" value="mobilenet" /> MobileNet</label>
           </div>
           <div class="panel-stack">
-            <div class="model-block">
-              <h3>CNN</h3>
-              <div class="preview-wrap">
-                <img id="cnnOutputImage" class="preview hidden" alt="CNN output image" />
-                <video id="cnnOutputVideo" class="preview hidden" controls></video>
+            <div class="model-block wide">
+              <div class="preview-wrap full-height">
+                <img id="outputImage" class="preview hidden" alt="Output image" />
+                <video id="outputVideo" class="preview hidden" controls></video>
               </div>
-              <div class="model-result" id="cnnResult">
-                <div>Quả: <strong id="cnnFruit">-</strong></div>
-                <div>Số lượng: <strong id="cnnCounts">tươi 0 / hỏng 0</strong></div>
-                <div>Số khung hình mẫu: <strong id="cnnSampled">0</strong></div>
-              </div>
-            </div>
-            <div class="model-block">
-              <h3>MobileNet</h3>
-              <div class="preview-wrap">
-                <img id="mobileOutputImage" class="preview hidden" alt="MobileNet output image" />
-                <video id="mobileOutputVideo" class="preview hidden" controls></video>
-              </div>
-              <div class="model-result" id="mobileResult">
-                <div>Quả: <strong id="mobileFruit">-</strong></div>
-                <div>Số lượng: <strong id="mobileCounts">tươi 0 / hỏng 0</strong></div>
-                <div>Số khung hình mẫu: <strong id="mobileSampled">0</strong></div>
+              <div class="model-result" id="outResult">
+                <div>Số lượng: <strong id="outCounts">tươi 0 / hỏng 0</strong></div>
               </div>
             </div>
           </div>
@@ -99,6 +80,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=18"></script>
+    <script src="/static/app.js?v=21"></script>
   </body>
 </html>
