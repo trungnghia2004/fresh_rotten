@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import io
 import json
@@ -30,11 +30,12 @@ TRAIN_DIR = Path(os.getenv("TRAIN_DIR", Path(__file__).resolve().parent / "train
 CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", Path(__file__).resolve().parent / "class_names.json"))
 ALLOWED_QUALITIES = {"fresh", "rotten"}
 DETECT_MODEL = Path(r"F:\fresh_rotten\yolo_fruits_and_vegetables_v3.pt")
-DETECT_CONF = float(os.getenv("DETECT_CONF", "0.2"))
+
+DETECT_CONF = float(os.getenv("DETECT_CONF", "0.25"))
 
 MODEL_PATHS = {
     "cnn": Path(__file__).resolve().parent / "cnn_best.keras",
-    "mobilenet": Path(__file__).resolve().parent / "mobilenet_final.keras",
+    "mobilenet": Path(__file__).resolve().parent / "mobilenet_best.keras",
 }
 FALLBACK_FRUITS = [x.strip() for x in os.getenv("FRUIT_NAMES", "").split(",") if x.strip()]
 
@@ -81,8 +82,13 @@ def load_class_names_from_file(path: Path) -> List[str]:
         return []
     if not isinstance(data, list):
         return []
-    cleaned = [str(x).strip() for x in data if str(x).strip()]
-    return sorted(set(cleaned))
+
+    cleaned = []
+    for x in data:
+        s = str(x).strip()
+        if s and s not in cleaned:
+            cleaned.append(s)
+    return cleaned
 
 
 def load_assets() -> None:
@@ -149,7 +155,10 @@ def decode_prediction(model: tf.keras.Model, pred: np.ndarray) -> dict:
         confidence = float(np.max(probs))
         if class_count == output_dim:
             label = _idx_to_label[idx]
-            fruit, quality = label.rsplit("_", 1)
+            if "_" in label:
+                fruit, quality = label.rsplit("_", 1)
+            else:
+                fruit, quality = "unknown", label  # binary fresh/rotten labels
         else:
             # Fallback when class mapping from train/ is unavailable:
             # labels were trained as fruit_fresh, fruit_rotten (sorted),
@@ -164,23 +173,13 @@ def decode_prediction(model: tf.keras.Model, pred: np.ndarray) -> dict:
     elif output_dim == 1 and activation_name == "sigmoid":
         # Binary sigmoid branch: infer positive class from training class map when available.
         score = float(np.clip(pred[0], 0.0, 1.0))
-        positive_quality = "rotten"
-        negative_quality = "fresh"
+        # Huấn luyện: label 0 = fresh, label 1 = rotten => sigmoid trả xác suất "rotten"
         fruit = "unknown"
-
-        if class_count == 2:
-            neg_label = _idx_to_label.get(0, "")
-            pos_label = _idx_to_label.get(1, "")
-            if "_" in neg_label and "_" in pos_label:
-                neg_fruit, neg_quality = neg_label.rsplit("_", 1)
-                pos_fruit, pos_quality = pos_label.rsplit("_", 1)
-                if neg_fruit == pos_fruit:
-                    fruit = neg_fruit
-                negative_quality = neg_quality
-                positive_quality = pos_quality
-
-        quality = positive_quality if score >= 0.5 else negative_quality
-        confidence = score if score >= 0.5 else 1.0 - score
+        positive_quality = "rotten"  # prob >= thresh -> rotten
+        negative_quality = "fresh"   # prob < thresh -> fresh
+        thresh = 0.7
+        quality = positive_quality if score >= thresh else negative_quality
+        confidence = score if score >= thresh else 1.0 - score
         label = f"{fruit}_{quality}"
     else:
         # Fallback for unsupported output shape/activation so API never crashes.
@@ -243,45 +242,52 @@ def aggregate_video_model(model: tf.keras.Model, frames: List[np.ndarray]) -> di
     }
 
 
-def _run_yolo(img_rgb: Image.Image, conf: float, imgsz: int):
-    res = _detector(np.array(img_rgb), imgsz=imgsz, conf=conf, verbose=False)[0]
-    return res
-
-
 def detect_and_crop(img: Image.Image):
+    """
+    Run YOLO once (using its internal default conf), return boxes sorted by confidence (desc).
+    """
     if _detector is None:
         return [], 0.0, {"attempts": []}
-    img_rgb = img.convert("RGB")
-    attempts = []
 
-    def process_result(res, conf_thresh):
-        outputs = []
-        names = _detector.model.names  # type: ignore
-        max_conf_local = float(res.boxes.conf.max().item()) if len(res.boxes.conf) else 0.0
-        sorted_idx = np.argsort(res.boxes.conf.cpu().numpy())[::-1] if len(res.boxes.conf) else []
+    img_rgb = img.convert("RGB")
+    res = _detector(img_rgb, imgsz=640, verbose=False)[0]
+    names = _detector.model.names  # type: ignore
+
+    outputs = []
+    debug_list = []
+    if len(res.boxes):
+        sorted_idx = np.argsort(res.boxes.conf.cpu().numpy())[::-1]
+        W, H = img.size
+        pad_ratio = 0.05  # mở rộng 5% mỗi chiều trước khi crop
         for idx in sorted_idx:
             box = res.boxes.xyxy[idx]
             cls = res.boxes.cls[idx]
             conf = float(res.boxes.conf[idx])
-            if conf < conf_thresh:
-                continue
-            x1, y1, x2, y2 = map(int, box.cpu().numpy().tolist())
             cls_name = names.get(int(cls), str(int(cls)))
-            crop = img.crop((x1, y1, x2, y2))
+            x1, y1, x2, y2 = map(float, box.cpu().numpy().tolist())
+            # mở rộng box
+            w = x2 - x1
+            h = y2 - y1
+            dx = w * pad_ratio
+            dy = h * pad_ratio
+            x1e = max(0, x1 - dx)
+            y1e = max(0, y1 - dy)
+            x2e = min(W, x2 + dx)
+            y2e = min(H, y2 + dy)
+            crop = img.crop((x1e, y1e, x2e, y2e)).convert("RGB")
             outputs.append(
                 {
-                    "box": [x1, y1, x2, y2],
+                    "box": [int(x1), int(y1), int(x2), int(y2)],
                     "det_label": cls_name,
                     "det_confidence": conf,
                     "crop": crop,
                 }
             )
-        return outputs, max_conf_local
+            debug_list.append({"label": cls_name, "conf": conf, "box": [int(x1), int(y1), int(x2), int(y2)], "expanded_box": [int(x1e), int(y1e), int(x2e), int(y2e)]})
 
-    res1 = _run_yolo(img_rgb, DETECT_CONF, 960)
-    outs1, max1 = process_result(res1, DETECT_CONF)
-    attempts.append({"imgsz": 960, "conf": DETECT_CONF, "max_conf": max1, "boxes": len(res1.boxes)})
-    return outs1, max1, {"attempts": attempts}
+    max_conf = float(res.boxes.conf.max().item()) if len(res.boxes.conf) else 0.0
+    dbg = [{"imgsz": 640, "conf": "default", "max_conf": max_conf, "boxes": len(res.boxes), "tops": debug_list}]
+    return outputs, max_conf, {"attempts": dbg}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -306,26 +312,29 @@ async def predict_image(file: UploadFile = File(...)):
         if not det_list:
             return JSONResponse({"error": f"No fruits detected by YOLO. max_conf={max_conf:.3f}", "debug": dbg}, status_code=400)
 
-        # choose label of highest-confidence detection
-        top_det = max(det_list, key=lambda d: d["det_confidence"])
-        target_label = top_det["det_label"]
-
-        # keep only detections with same label and conf >= DETECT_CONF
-        target_dets = [d for d in det_list if d["det_label"] == target_label and d["det_confidence"] >= DETECT_CONF]
-        if not target_dets:
-            return JSONResponse({"error": "No detections above threshold for target label."}, status_code=400)
+        # Lấy nhãn có confidence cao nhất, chỉ giữ các box cùng nhãn và conf >= 0.6
+        top_label = det_list[0]["det_label"]
+        filtered = [d for d in det_list if d["det_label"] == top_label and d["det_confidence"] >= 0.6]
+        if not filtered:
+            filtered = [det_list[0]]
 
         detections = []
         fruit_counts = {}
-        for det in target_dets:
+        crop_count = len(filtered)
+        total_qc = {"fresh": 0, "rotten": 0}
+        for det in filtered:
             fruit = det["det_label"]
+            # Chuẩn bị ảnh 224x224 cho model
             arr = preprocess_image(det["crop"])
             models = predict_image_models(arr)
             for m in models.values():
                 m["fruit"] = fruit
                 m["label"] = f"{fruit}_{m['quality']}"
+                m["crop_count"] = crop_count
             agg_model = models.get("mobilenet") or next(iter(models.values()))
             quality = agg_model["quality"]
+            if quality in total_qc:
+                total_qc[quality] += 1
             fc = fruit_counts.setdefault(fruit, {"total": 0, "fresh": 0, "rotten": 0})
             fc["total"] += 1
             if quality in fc:
@@ -341,11 +350,20 @@ async def predict_image(file: UploadFile = File(...)):
                 }
             )
 
+        main_detection = max(detections, key=lambda d: d["detection"]["confidence"], default=None)
+        # gán tổng số fresh/rotten và crop_count vào models của main_detection để UI hiển thị
+        if main_detection and "models" in main_detection:
+            for m in main_detection["models"].values():
+                m["quality_counts"] = total_qc
+                m["crop_count"] = crop_count
+
         return {
             "mode": "image",
             "detections": detections,
             "fruit_counts": fruit_counts,
             "sampled_frames": 1,
+            "main_detection": main_detection,
+            "debug": dbg,
         }
     except Exception as exc:
         return JSONResponse({"error": f"Image prediction failed: {exc}"}, status_code=500)

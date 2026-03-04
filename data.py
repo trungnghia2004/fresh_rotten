@@ -1,58 +1,87 @@
-import os, shutil, random
-from pathlib import Path
+import os
+import shutil
+import random
+from sklearn.model_selection import train_test_split
 
-DATA_ROOT = Path(r"C:\Users\ADMIN\Downloads\Train")
-OUT_ROOT  = Path(r"C:\Users\ADMIN\Downloads\processed_split_2level")
+INPUT_ROOT = r"C:\Users\ADMIN\Downloads\Train"
+OUTPUT_ROOT = r"C:\Users\ADMIN\Downloads\fresh_rotten_split"
 
-SPLIT = {"train": 0.8, "val": 0.1, "test": 0.1}
-IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-SEED = 42
-random.seed(SEED)
+TRAIN_RATIO = 0.8
+VAL_RATIO = 0.1
+TEST_RATIO = 0.1
 
-def list_images(folder: Path):
-    return [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMG_EXT]
+ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".bmp")
 
-def split_files(files):
-    files = files.copy()
-    random.shuffle(files)
-    n = len(files)
-    n_train = int(n * SPLIT["train"])
-    n_val   = int(n * SPLIT["val"])
-    train = files[:n_train]
-    val   = files[n_train:n_train+n_val]
-    test  = files[n_train+n_val:]
-    return train, val, test
+random.seed(42)
 
-# tạo cây thư mục output
-for split_name in SPLIT:
-    (OUT_ROOT / split_name).mkdir(parents=True, exist_ok=True)
 
-total = 0
-for fruit_dir in DATA_ROOT.iterdir():
-    if not fruit_dir.is_dir():
+fresh_files = []
+rotten_files = []
+
+for fruit in os.listdir(INPUT_ROOT):
+    fruit_dir = os.path.join(INPUT_ROOT, fruit)
+    if not os.path.isdir(fruit_dir):
         continue
-    fruit = fruit_dir.name
 
     for quality in ["fresh", "rotten"]:
-        q_dir = fruit_dir / quality
-        if not q_dir.exists():
+        q_dir = os.path.join(fruit_dir, quality)
+        if not os.path.isdir(q_dir):
             continue
 
-        files = list_images(q_dir)
-        if not files:
-            continue
+        for fn in os.listdir(q_dir):
+            if not fn.lower().endswith(ALLOWED_EXT):
+                continue
 
-        tr, va, te = split_files(files)
-        for split_name, split_list in [("train", tr), ("val", va), ("test", te)]:
-            dst_dir = OUT_ROOT / split_name / fruit / quality
-            dst_dir.mkdir(parents=True, exist_ok=True)
+            full_path = os.path.join(q_dir, fn)
 
-            for i, src in enumerate(split_list):
-                dst = dst_dir / f"{fruit}_{quality}_{i:06d}{src.suffix.lower()}"
-                shutil.copy2(src, dst)
+            if quality == "fresh":
+                fresh_files.append(full_path)
+            else:
+                rotten_files.append(full_path)
 
-        total += len(files)
-        print(f"{fruit}/{quality}: {len(files)} -> train {len(tr)}, val {len(va)}, test {len(te)}")
+print("Fresh:", len(fresh_files))
+print("Rotten:", len(rotten_files))
 
-print("✅ Done. Total images:", total)
-print("Output:", OUT_ROOT)
+
+def split_data(file_list):
+    train, temp = train_test_split(
+        file_list,
+        test_size=(1 - TRAIN_RATIO),
+        random_state=42
+    )
+
+    val, test = train_test_split(
+        temp,
+        test_size=0.5,
+        random_state=42
+    )
+
+    return train, val, test
+
+fresh_train, fresh_val, fresh_test = split_data(fresh_files)
+rotten_train, rotten_val, rotten_test = split_data(rotten_files)
+
+
+def create_dirs():
+    for split in ["train", "val", "test"]:
+        for label in ["fresh", "rotten"]:
+            os.makedirs(os.path.join(OUTPUT_ROOT, split, label), exist_ok=True)
+
+create_dirs()
+
+
+def copy_files(file_list, split, label):
+    for src in file_list:
+        filename = os.path.basename(src)
+        dst = os.path.join(OUTPUT_ROOT, split, label, filename)
+        shutil.copy2(src, dst)
+
+copy_files(fresh_train, "train", "fresh")
+copy_files(fresh_val, "val", "fresh")
+copy_files(fresh_test, "test", "fresh")
+
+copy_files(rotten_train, "train", "rotten")
+copy_files(rotten_val, "val", "rotten")
+copy_files(rotten_test, "test", "rotten")
+
+print("✅ DONE. Dataset saved to:", OUTPUT_ROOT)

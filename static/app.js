@@ -1,7 +1,11 @@
-const fileInput = document.getElementById("fileInput");
+﻿const fileInput = document.getElementById("fileInput");
 const predictBtn = document.getElementById("predictBtn");
 const inputHint = document.getElementById("inputHint");
 const globalResult = document.getElementById("globalResult");
+
+function setText(el, value) {
+  if (el) el.textContent = value;
+}
 
 const panels = {
   cnn: {
@@ -10,8 +14,6 @@ const panels = {
     outputImage: document.getElementById("cnnOutputImage"),
     outputVideo: document.getElementById("cnnOutputVideo"),
     fruit: document.getElementById("cnnFruit"),
-    quality: document.getElementById("cnnQuality"),
-    confidence: document.getElementById("cnnConfidence"),
     sampled: document.getElementById("cnnSampled"),
     counts: document.getElementById("cnnCounts"),
   },
@@ -21,8 +23,6 @@ const panels = {
     outputImage: document.getElementById("mobileOutputImage"),
     outputVideo: document.getElementById("mobileOutputVideo"),
     fruit: document.getElementById("mobileFruit"),
-    quality: document.getElementById("mobileQuality"),
-    confidence: document.getElementById("mobileConfidence"),
     sampled: document.getElementById("mobileSampled"),
     counts: document.getElementById("mobileCounts"),
   },
@@ -48,11 +48,9 @@ function resetPanel(panel) {
   hideMedia(panel.inputVideo);
   hideMedia(panel.outputImage);
   hideMedia(panel.outputVideo);
-  panel.fruit.textContent = "-";
-  panel.quality.textContent = "-";
-  panel.confidence.textContent = "-";
-  panel.sampled.textContent = "0";
-  if (panel.counts) panel.counts.textContent = "tươi 0 / hỏng 0";
+  setText(panel.fruit, "-");
+  setText(panel.sampled, "0");
+  setText(panel.counts, "tươi 0 / hỏng 0 (crops 0)");
 }
 
 function resetAllPanels() {
@@ -67,13 +65,13 @@ function syncInputByMode() {
 
   if (mode === "image") {
     fileInput.accept = "image/*";
-    inputHint.textContent = "Đang ở chế độ ảnh.";
+    inputHint.textContent = "Ã„Âang Ã¡Â»Å¸ chÃ¡ÂºÂ¿ Ã„â€˜Ã¡Â»â„¢ Ã¡ÂºÂ£nh.";
   } else {
     fileInput.accept = "video/*";
-    inputHint.textContent = "Đang ở chế độ video.";
+    inputHint.textContent = "Ã„Âang Ã¡Â»Å¸ chÃ¡ÂºÂ¿ Ã„â€˜Ã¡Â»â„¢ video.";
   }
 
-  setGlobalResult("Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.", "empty");
+  setGlobalResult("ChÃ†Â°a cÃƒÂ³ kÃ¡ÂºÂ¿t quÃ¡ÂºÂ£. HÃƒÂ£y chÃ¡Â»Ân tÃ¡Â»â€¡p vÃƒÂ  bÃ¡ÂºÂ¥m DÃ¡Â»Â± Ã„â€˜oÃƒÂ¡n.", "empty");
 }
 
 function setPanelMedia(panel, mode, objectUrl, target) {
@@ -92,12 +90,9 @@ function setPanelMedia(panel, mode, objectUrl, target) {
 }
 
 function fillPanelResult(panel, modelData, sampledFrames, fruitOverride) {
-  panel.fruit.textContent = fruitOverride || modelData?.fruit || "-";
-  panel.quality.textContent = modelData?.quality || "-";
-  const confidence = typeof modelData?.confidence === "number" ? modelData.confidence.toFixed(4) : "-";
-  panel.confidence.textContent = confidence;
+  setText(panel.fruit, fruitOverride || modelData?.fruit || "-");
   const sampled = modelData?.sampled_frames ?? sampledFrames ?? 0;
-  panel.sampled.textContent = String(sampled);
+  setText(panel.sampled, String(sampled));
 
   const qc = modelData?.quality_counts || {};
   let fresh = qc.fresh;
@@ -106,7 +101,8 @@ function fillPanelResult(panel, modelData, sampledFrames, fruitOverride) {
     fresh = modelData?.quality === "fresh" ? 1 : 0;
     rotten = modelData?.quality === "rotten" ? 1 : 0;
   }
-  if (panel.counts) panel.counts.textContent = `tươi ${fresh} / hỏng ${rotten}`;
+  const cropCount = modelData?.crop_count ?? modelData?.detections_count ?? 0;
+  setText(panel.counts, `tươi ${fresh} / hỏng ${rotten} (crops ${cropCount})`);
 }
 
 async function postFile(url, file) {
@@ -119,7 +115,7 @@ async function postFile(url, file) {
   try {
     data = raw ? JSON.parse(raw) : {};
   } catch {
-    throw new Error(`API ${res.status}: ${raw || "Phản hồi rỗng từ server"}`);
+    throw new Error(`API ${res.status}: ${raw || "PhÃ¡ÂºÂ£n hÃ¡Â»â€œi rÃ¡Â»â€”ng tÃ¡Â»Â« server"}`);
   }
 
   if (!res.ok) {
@@ -143,13 +139,13 @@ fileInput.addEventListener("change", () => {
 
   setPanelMedia(panels.cnn, mode, objectUrl, "input");
   setPanelMedia(panels.mobilenet, mode, objectUrl, "input");
-  setGlobalResult("Đã tải tệp. Bấm Dự đoán để chạy cả CNN và MobileNet.", "ok");
+  setGlobalResult("Ã„ÂÃƒÂ£ tÃ¡ÂºÂ£i tÃ¡Â»â€¡p. BÃ¡ÂºÂ¥m DÃ¡Â»Â± Ã„â€˜oÃƒÂ¡n Ã„â€˜Ã¡Â»Æ’ chÃ¡ÂºÂ¡y cÃ¡ÂºÂ£ CNN vÃƒÂ  MobileNet.", "ok");
 });
 
 predictBtn.addEventListener("click", async () => {
   const file = fileInput.files[0];
   if (!file) {
-    setGlobalResult("Hãy chọn tệp trước khi dự đoán.", "error");
+    setGlobalResult("HÃƒÂ£y chÃ¡Â»Ân tÃ¡Â»â€¡p trÃ†Â°Ã¡Â»â€ºc khi dÃ¡Â»Â± Ã„â€˜oÃƒÂ¡n.", "error");
     return;
   }
 
@@ -157,7 +153,7 @@ predictBtn.addEventListener("click", async () => {
   const endpoint = mode === "image" ? "/predict_image" : "/predict_video";
   const objectUrl = URL.createObjectURL(file);
 
-  setGlobalResult("Đang xử lý...", "ok");
+  setGlobalResult("Ã„Âang xÃ¡Â»Â­ lÃƒÂ½...", "ok");
 
   try {
     const data = await postFile(endpoint, file);
@@ -165,8 +161,8 @@ predictBtn.addEventListener("click", async () => {
     let cnnData = data.models?.cnn;
     let mbData = data.models?.mobilenet;
     let fruitOverride = null;
-    if (Array.isArray(data.detections) && data.detections.length > 0) {
-      const det = data.detections[0];
+    const det = data.main_detection || (Array.isArray(data.detections) && data.detections.length > 0 ? data.detections[0] : null);
+    if (det) {
       fruitOverride = det?.detection?.label || null;
       cnnData = det?.models?.cnn;
       mbData = det?.models?.mobilenet;
@@ -178,10 +174,13 @@ predictBtn.addEventListener("click", async () => {
     fillPanelResult(panels.cnn, cnnData, data.sampled_frames, fruitOverride);
     fillPanelResult(panels.mobilenet, mbData, data.sampled_frames, fruitOverride);
 
-    setGlobalResult("Đã có kết quả để so sánh CNN và MobileNet.", "ok");
+    setGlobalResult("Ã„ÂÃƒÂ£ cÃƒÂ³ kÃ¡ÂºÂ¿t quÃ¡ÂºÂ£ Ã„â€˜Ã¡Â»Æ’ so sÃƒÂ¡nh CNN vÃƒÂ  MobileNet.", "ok");
   } catch (err) {
-    setGlobalResult(`Lỗi gọi API: ${err.message || err}`, "error");
+    setGlobalResult(`LÃ¡Â»â€”i gÃ¡Â»Âi API: ${err.message || err}`, "error");
   }
 });
 
 syncInputByMode();
+
+
+
