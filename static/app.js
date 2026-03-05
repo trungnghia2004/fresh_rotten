@@ -140,13 +140,21 @@ predictBtn.addEventListener("click", async () => {
     const data = await postFile(endpoint, file);
 
     // chọn annotated image
-    const annotated = data.annotated_image || objectUrl;
-    latestAnnotated = annotated;
-    if (mode === "image") {
+    const annotated = data.annotated_image || null;
+    const annotatedVideo = data.annotated_video || null;
+    latestAnnotated = annotatedVideo || annotated || objectUrl;
+
+    if (annotatedVideo) {
+      showMedia(outputVideo, annotatedVideo);
+      hideMedia(outputImage);
+    } else if (annotated) {
       showMedia(outputImage, annotated);
       hideMedia(outputVideo);
+    } else if (mode === "image") {
+      showMedia(outputImage, objectUrl);
+      hideMedia(outputVideo);
     } else {
-      showMedia(outputVideo, annotated);
+      showMedia(outputVideo, objectUrl);
       hideMedia(outputImage);
     }
 
@@ -167,4 +175,3 @@ predictBtn.addEventListener("click", async () => {
 });
 
 syncInputByMode();
-

@@ -122,17 +122,30 @@ def render_annotated(image: Image.Image, detections: List[dict]) -> str:
     """Vẽ box + nhãn fruit_quality lên ảnh, trả về data URL base64."""
     if not detections:
         return ""
+    img = annotate_pil(image, detections)
+    import base64
+    import io
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def annotate_pil(image: Image.Image, detections: List[dict]) -> Image.Image:
+    """Vẽ box + nhãn fruit_quality lên ảnh, trả về ảnh PIL."""
     img = image.convert("RGB").copy()
+    if not detections:
+        return img
     draw = ImageDraw.Draw(img)
     for det in detections:
         box = det["detection"]["box"]
         fruit = det["detection"]["label"]
-        # lấy quality từ mobilenet nếu có, nếu không lấy quality của model đầu tiên
         quality = None
         if det.get("models"):
             if "mobilenet" in det["models"]:
                 quality = det["models"]["mobilenet"].get("quality")
-            if quality is None:
+            if quality is None and det["models"]:
                 first_model = next(iter(det["models"].values()))
                 quality = first_model.get("quality")
         label = f"{fruit}_{quality}" if quality else fruit
@@ -146,13 +159,7 @@ def render_annotated(image: Image.Image, detections: List[dict]) -> str:
             tw, th = _font.getsize(text)
         draw.rectangle([x1, y1 - th - 4, x1 + tw + 6, y1], fill=(0, 0, 0, 180))
         draw.text((x1 + 3, y1 - th - 2), text, fill=(255, 255, 255), font=_font)
-    import base64
-    import io
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+    return img
 
 
 def _activation_name(model: tf.keras.Model) -> str | None:
@@ -428,7 +435,7 @@ async def predict_video(file: UploadFile = File(...)):
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         step = max(frame_count // 12, 1)
 
-        sampled: List[np.ndarray] = []
+        sampled_imgs: List[Image.Image] = []
         idx = 0
         while True:
             ret, frame = cap.read()
@@ -437,20 +444,93 @@ async def predict_video(file: UploadFile = File(...)):
             if idx % step == 0:
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame_rgb)
-                sampled.append(preprocess_image(img))
+                sampled_imgs.append(img)
             idx += 1
 
         cap.release()
 
-        if not sampled:
+        if not sampled_imgs:
             return JSONResponse({"error": "No frame sampled from video."}, status_code=400)
 
-        load_assets()
-        models = {name: aggregate_video_model(model, sampled) for name, model in _models.items()}
+        annotated_frames: List[Image.Image] = []
+        detections_all: List[dict] = []
+        fruit_counts: Dict[str, dict] = {}
+        total_qc = {"fresh": 0, "rotten": 0}
+        dbg = []
+
+        for img in sampled_imgs:
+            det_list, max_conf, dbg_det = detect_and_crop(img)
+            dbg.extend(dbg_det.get("attempts", [])) if isinstance(dbg_det, dict) else None
+            if not det_list:
+                continue
+            filtered = [d for d in det_list if d["det_confidence"] >= 0.7] or det_list
+            frame_detections = []
+            crop_count = len(filtered)
+            for det in filtered:
+                fruit = det["det_label"]
+                arr = preprocess_image(det["crop"])
+                models = predict_image_models(arr)
+                for m in models.values():
+                    m["fruit"] = fruit
+                    m["label"] = f"{fruit}_{m['quality']}"
+                    m["crop_count"] = crop_count
+                agg_model = models.get("mobilenet") or next(iter(models.values()))
+                quality = agg_model["quality"]
+                if quality in total_qc:
+                    total_qc[quality] += 1
+                fc = fruit_counts.setdefault(fruit, {"total": 0, "fresh": 0, "rotten": 0})
+                fc["total"] += 1
+                if quality in fc:
+                    fc[quality] += 1
+                frame_detections.append(
+                    {"detection": {"box": det["box"], "label": fruit, "confidence": det["det_confidence"]}, "models": models}
+                )
+            if frame_detections:
+                detections_all.extend(frame_detections)
+                annotated_frames.append(annotate_pil(img, frame_detections))
+
+        if not annotated_frames:
+            return JSONResponse({"error": "No fruits detected in sampled video frames."}, status_code=400)
+
+        # tạo video annotate
+        import cv2
+        import numpy as np
+        import base64
+
+        first_frame = annotated_frames[0]
+        w, h = first_frame.size
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        writer = cv2.VideoWriter(temp_out.name, fourcc, 8, (w, h))
+
+        def pil_to_bgr(im: Image.Image) -> np.ndarray:
+            return cv2.cvtColor(np.array(im.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+        for im in annotated_frames:
+            writer.write(pil_to_bgr(im))
+        writer.release()
+
+        with open(temp_out.name, "rb") as f:
+            vid_b64 = base64.b64encode(f.read()).decode("ascii")
+        os.remove(temp_out.name)
+
+        main_detection = detections_all[0] if detections_all else None
+        if main_detection and "models" in main_detection:
+            for m in main_detection["models"].values():
+                m["quality_counts"] = total_qc
+                m["crop_count"] = len(detections_all)
+
+        annotated_image = render_annotated(sampled_imgs[0], detections_all[:5])  # một frame làm thumbnail
+
         return {
             "mode": "video",
-            "models": models,
-            "sampled_frames": len(sampled),
+            "detections": detections_all,
+            "fruit_counts": fruit_counts,
+            "sampled_frames": len(sampled_imgs),
+            "main_detection": main_detection,
+            "annotated_image": annotated_image,
+            "annotated_video": f"data:video/mp4;base64,{vid_b64}",
+            "debug": dbg,
         }
     except Exception as exc:
         return JSONResponse({"error": f"Video prediction failed: {exc}"}, status_code=500)
