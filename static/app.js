@@ -1,4 +1,4 @@
-const fileInput = document.getElementById("fileInput");
+﻿const fileInput = document.getElementById("fileInput");
 const predictBtn = document.getElementById("predictBtn");
 const inputHint = document.getElementById("inputHint");
 const globalResult = document.getElementById("globalResult");
@@ -7,26 +7,44 @@ const inputImage = document.getElementById("inputImage");
 const inputVideo = document.getElementById("inputVideo");
 const outputImage = document.getElementById("outputImage");
 const outputVideo = document.getElementById("outputVideo");
+const outputStream = document.getElementById("outputStream");
 const outCounts = document.getElementById("outCounts");
+const outResult = document.getElementById("outResult");
 const modelRadios = document.querySelectorAll('input[name="modelPick"]');
+const modelSwitch = document.getElementById("modelSwitch");
 
 const defaultCountsText = "tươi 0 / hỏng 0 (crops 0)";
 
 let latestModels = { cnn: null, mobilenet: null };
 let latestMode = "image";
-let latestAnnotated = null;
 
 function setText(el, value) {
   if (el) el.textContent = value;
 }
 
 function hideMedia(el) {
+  if (!el) return;
+  if (el.tagName === "VIDEO") {
+    el.pause();
+    el.removeAttribute("src");
+    el.load();
+  } else {
+    el.removeAttribute("src");
+  }
   el.classList.add("hidden");
-  el.removeAttribute("src");
 }
 
-function showMedia(el, url) {
+function showMedia(el, url, mime) {
+  if (!el) return;
+  if (el.tagName === "VIDEO" && mime) {
+    el.type = mime;
+  }
   el.src = url;
+  if (el.tagName === "VIDEO") {
+    el.muted = true;
+    el.load();
+    el.play().catch(() => {});
+  }
   el.classList.remove("hidden");
 }
 
@@ -40,9 +58,9 @@ function resetAll() {
   hideMedia(inputVideo);
   hideMedia(outputImage);
   hideMedia(outputVideo);
+  hideMedia(outputStream);
   setText(outCounts, defaultCountsText);
   latestModels = { cnn: null, mobilenet: null };
-  latestAnnotated = null;
 }
 
 function setGlobalResult(text, state = "ok") {
@@ -55,17 +73,28 @@ function syncInputByMode() {
   latestMode = mode;
   fileInput.value = "";
   resetAll();
+
   if (mode === "image") {
     fileInput.accept = "image/*";
     inputHint.textContent = "Đang ở chế độ ảnh.";
+    if (modelSwitch) modelSwitch.classList.remove("hidden");
+    if (outResult) outResult.classList.remove("hidden");
   } else {
     fileInput.accept = "video/*";
     inputHint.textContent = "Đang ở chế độ video.";
+    if (modelSwitch) modelSwitch.classList.add("hidden");
+    if (outResult) outResult.classList.add("hidden");
   }
+
   setGlobalResult("Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.", "empty");
 }
 
 function updateCounts() {
+  if (latestMode === "video") {
+    setText(outCounts, "");
+    return;
+  }
+
   const picked = document.querySelector('input[name="modelPick"]:checked')?.value || "cnn";
   const modelData = latestModels[picked];
   if (!modelData) {
@@ -93,6 +122,7 @@ fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   resetAll();
   if (!file) return;
+
   const mode = getMode();
   const objectUrl = URL.createObjectURL(file);
   if (mode === "image") {
@@ -139,26 +169,31 @@ predictBtn.addEventListener("click", async () => {
   try {
     const data = await postFile(endpoint, file);
 
-    // chọn annotated image
     const annotated = data.annotated_image || null;
     const annotatedVideo = data.annotated_video || null;
-    latestAnnotated = annotatedVideo || annotated || objectUrl;
 
     if (annotatedVideo) {
-      showMedia(outputVideo, annotatedVideo);
+      const mime = data.annotated_video_mime || "video/mp4";
+      const videoUrl = annotatedVideo.startsWith("http")
+        ? annotatedVideo
+        : new URL(annotatedVideo, window.location.origin).toString();
+      showMedia(outputVideo, videoUrl, mime);
       hideMedia(outputImage);
+      hideMedia(outputStream);
     } else if (annotated) {
       showMedia(outputImage, annotated);
       hideMedia(outputVideo);
+      hideMedia(outputStream);
     } else if (mode === "image") {
       showMedia(outputImage, objectUrl);
       hideMedia(outputVideo);
+      hideMedia(outputStream);
     } else {
       showMedia(outputVideo, objectUrl);
       hideMedia(outputImage);
+      hideMedia(outputStream);
     }
 
-    // lấy model data từ main_detection nếu có, else từ data.models
     let cnnData = data.models?.cnn;
     let mbData = data.models?.mobilenet;
     const det = data.main_detection || (Array.isArray(data.detections) && data.detections[0]);
@@ -167,8 +202,9 @@ predictBtn.addEventListener("click", async () => {
       mbData = det.models?.mobilenet || mbData;
     }
     latestModels = { cnn: cnnData, mobilenet: mbData };
+
     updateCounts();
-    setGlobalResult("Đã có kết quả. Chọn CNN/MobileNet để xem thống kê.", "ok");
+    setGlobalResult("Đã có kết quả.", "ok");
   } catch (err) {
     setGlobalResult(`Lỗi gọi API: ${err.message || err}`, "error");
   }

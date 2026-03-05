@@ -3,7 +3,11 @@
 import io
 import json
 import os
+import shutil
+import subprocess
 import tempfile
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -12,7 +16,6 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-import tensorflow as tf
 
 try:
     from ultralytics import YOLO
@@ -32,10 +35,13 @@ ALLOWED_QUALITIES = {"fresh", "rotten"}
 DETECT_MODEL = Path(r"F:\fresh_rotten\yolo_fruits_and_vegetables_v3.pt")
 
 DETECT_CONF = float(os.getenv("DETECT_CONF", "0.25"))
+USE_TF_GPU = os.getenv("USE_TF_GPU", "0") == "1"
+VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "2")))
+VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "5")))
 
 MODEL_PATHS = {
     "cnn": Path(__file__).resolve().parent / "cnn_best.keras",
-    "mobilenet": Path(__file__).resolve().parent / "mobilenet_best.keras",
+    "mobilenet": Path(__file__).resolve().parent / "mobilenet_fruit_quality.keras",
 }
 FALLBACK_FRUITS = [x.strip() for x in os.getenv("FRUIT_NAMES", "").split(",") if x.strip()]
 
@@ -47,7 +53,37 @@ _class_names: List[str] = []
 _label_to_idx: Dict[str, int] = {}
 _idx_to_label: Dict[int, str] = {}
 _detector: YOLO | None = None
-_font = ImageFont.load_default()
+try:
+    _font = ImageFont.truetype("arial.ttf", 24)
+except Exception:
+    _font = ImageFont.load_default()
+_custom_objects = {}
+tf = None
+_patched_input_layer = None
+_patched_batch_norm = None
+
+
+def _get_tf():
+    global tf, _patched_input_layer, _patched_batch_norm
+    if tf is None:
+        import tensorflow as _tf
+
+        tf = _tf
+
+        class PatchedInputLayer(tf.keras.layers.InputLayer):
+            def __init__(self, *args, **kwargs):
+                if "batch_shape" in kwargs and "batch_input_shape" not in kwargs:
+                    kwargs["batch_input_shape"] = kwargs.pop("batch_shape")
+                super().__init__(*args, **kwargs)
+
+        class PatchedBatchNorm(tf.keras.layers.BatchNormalization):
+            def __init__(self, *args, **kwargs):
+                kwargs.pop("synchronized", None)
+                super().__init__(*args, **kwargs)
+
+        _patched_input_layer = PatchedInputLayer
+        _patched_batch_norm = PatchedBatchNorm
+    return tf
 
 
 @app.exception_handler(Exception)
@@ -96,6 +132,13 @@ def load_assets() -> None:
     global _models, _class_names, _label_to_idx, _idx_to_label, _detector
 
     if not _models:
+        tf_mod = _get_tf()
+        if not USE_TF_GPU:
+            try:
+                tf_mod.config.set_visible_devices([], "GPU")
+            except Exception:
+                pass
+
         _class_names = load_class_names_from_file(CLASS_NAMES_FILE)
         if not _class_names:
             _class_names = build_class_names(TRAIN_DIR)
@@ -104,19 +147,41 @@ def load_assets() -> None:
 
         for name, path in MODEL_PATHS.items():
             if path.exists():
-                _models[name] = tf.keras.models.load_model(path)
+                _models[name] = tf_mod.keras.models.load_model(
+                    path,
+                    compile=False,
+                    custom_objects={
+                        "InputLayer": _patched_input_layer,
+                        "DTypePolicy": tf_mod.keras.mixed_precision.Policy,
+                        "BatchNormalization": _patched_batch_norm,
+                    },
+                )
 
         if not _models:
             raise RuntimeError("No model found. Need cnn_best.keras or mobilenet_fruit_quality.keras")
 
     if _detector is None and YOLO and DETECT_MODEL.exists():
         _detector = YOLO(str(DETECT_MODEL))
+        try:
+            _detector.to("cuda")
+        except Exception:
+            pass
 
 
 def preprocess_image(img: Image.Image) -> np.ndarray:
     img = img.convert("RGB").resize(IMAGE_SIZE)
     arr = np.asarray(img, dtype=np.float32) / 255.0
     return np.expand_dims(arr, axis=0)
+
+
+def preprocess_batch(crops: List[Image.Image]) -> np.ndarray:
+    if not crops:
+        return np.empty((0, *IMAGE_SIZE, 3), dtype=np.float32)
+    arrs = []
+    for im in crops:
+        im = im.convert("RGB").resize(IMAGE_SIZE)
+        arrs.append(np.asarray(im, dtype=np.float32) / 255.0)
+    return np.stack(arrs, axis=0)
 
 def render_annotated(image: Image.Image, detections: List[dict]) -> str:
     """Vẽ box + nhãn fruit_quality lên ảnh, trả về data URL base64."""
@@ -150,15 +215,15 @@ def annotate_pil(image: Image.Image, detections: List[dict]) -> Image.Image:
                 quality = first_model.get("quality")
         label = f"{fruit}_{quality}" if quality else fruit
         x1, y1, x2, y2 = box
-        draw.rectangle([x1, y1, x2, y2], outline=(0, 200, 0), width=3)
+        draw.rectangle([x1, y1, x2, y2], outline=(0, 200, 0), width=4)
         text = label
         try:
             bbox = draw.textbbox((0, 0), text, font=_font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         except Exception:
             tw, th = _font.getsize(text)
-        draw.rectangle([x1, y1 - th - 4, x1 + tw + 6, y1], fill=(0, 0, 0, 180))
-        draw.text((x1 + 3, y1 - th - 2), text, fill=(255, 255, 255), font=_font)
+        draw.rectangle([x1, y1 - th - 8, x1 + tw + 10, y1], fill=(0, 0, 0, 180))
+        draw.text((x1 + 5, y1 - th - 4), text, fill=(255, 255, 255), font=_font)
     return img
 
 
@@ -286,6 +351,57 @@ def aggregate_video_model(model: tf.keras.Model, frames: List[np.ndarray]) -> di
     }
 
 
+def predict_models_batch(arr_batch: np.ndarray, model_names: List[str] | None = None) -> List[Dict[str, dict]]:
+    """
+    Chạy cả hai model trên batch crop một lần để giảm thời gian.
+    Trả về list cùng độ dài batch, mỗi phần tử chứa kết quả theo model.
+    """
+    load_assets()
+    if arr_batch.shape[0] == 0:
+        return []
+    batch_size = arr_batch.shape[0]
+    # chuẩn bị kết quả rỗng
+    out: List[Dict[str, dict]] = [dict() for _ in range(batch_size)]
+
+    def _predict_one(name_model):
+        name, model = name_model
+        preds = model.predict(arr_batch, verbose=0)
+        return name, model, preds
+
+    if model_names:
+        wanted = set(model_names)
+        items = [(name, model) for name, model in _models.items() if name in wanted]
+    else:
+        items = list(_models.items())
+    if not items:
+        return out
+    # chạy song song CNN + MobileNet trên cùng batch crop
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, min(2, len(items)))) as ex:
+            futures = [ex.submit(_predict_one, nm) for nm in items]
+            for fut in as_completed(futures):
+                name, model, preds = fut.result()
+                for i in range(batch_size):
+                    decoded = decode_prediction(model, preds[i])
+                    qc = {"fresh": 0, "rotten": 0}
+                    if decoded["quality"] in qc:
+                        qc[decoded["quality"]] = 1
+                    decoded["quality_counts"] = qc
+                    out[i][name] = decoded
+    except Exception:
+        # fallback an toàn nếu runtime không thread-safe
+        for name, model in items:
+            preds = model.predict(arr_batch, verbose=0)
+            for i in range(batch_size):
+                decoded = decode_prediction(model, preds[i])
+                qc = {"fresh": 0, "rotten": 0}
+                if decoded["quality"] in qc:
+                    qc[decoded["quality"]] = 1
+                decoded["quality_counts"] = qc
+                out[i][name] = decoded
+    return out
+
+
 def detect_and_crop(img: Image.Image):
     """
     Run YOLO once (using its internal default conf), return boxes sorted by confidence (desc).
@@ -365,11 +481,13 @@ async def predict_image(file: UploadFile = File(...)):
         fruit_counts = {}
         crop_count = len(filtered)
         total_qc = {"fresh": 0, "rotten": 0}
-        for det in filtered:
+
+        crops = [d["crop"] for d in filtered]
+        arr_batch = preprocess_batch(crops)
+        models_batch = predict_models_batch(arr_batch)
+
+        for det, models in zip(filtered, models_batch):
             fruit = det["det_label"]
-            # Chuẩn bị ảnh 224x224 cho model
-            arr = preprocess_image(det["crop"])
-            models = predict_image_models(arr)
             for m in models.values():
                 m["fruit"] = fruit
                 m["label"] = f"{fruit}_{m['quality']}"
@@ -420,9 +538,13 @@ async def predict_video(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("video/"):
         return JSONResponse({"error": "Please upload a video."}, status_code=400)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    with open(tmp_path, "wb") as tmp:
         tmp.write(await file.read())
-        tmp_path = tmp.name
+
+    cap = None
+    writer = None
 
     try:
         load_assets()
@@ -432,109 +554,149 @@ async def predict_video(file: UploadFile = File(...)):
         if not cap.isOpened():
             return JSONResponse({"error": "Cannot read video."}, status_code=400)
 
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        step = max(frame_count // 12, 1)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 0:
+            fps = 25.0
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if w <= 0 or h <= 0:
+            return JSONResponse({"error": "Invalid video size."}, status_code=400)
 
-        sampled_imgs: List[Image.Image] = []
-        idx = 0
+        out_dir = Path("static") / "tmp"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_name = f"annotated_{uuid.uuid4().hex}.mp4"
+        out_raw_name = f"annotated_{uuid.uuid4().hex}_raw.mp4"
+        out_path = out_dir / out_name
+        out_raw_path = out_dir / out_raw_name
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out_fps = float(fps) / float(VIDEO_FRAME_STEP)
+        writer = cv2.VideoWriter(str(out_raw_path), fourcc, out_fps, (w, h))
+        if not writer.isOpened():
+            return JSONResponse({"error": "Cannot open output video writer."}, status_code=500)
+
+        detections_all: List[dict] = []
+        fruit_counts: Dict[str, dict] = {}
+        dbg = []
+        sampled_frames = 0
+        first_annotated_img: Image.Image | None = None
+
+        frame_idx = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            if idx % step == 0:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = Image.fromarray(frame_rgb)
-                sampled_imgs.append(img)
-            idx += 1
 
-        cap.release()
-
-        if not sampled_imgs:
-            return JSONResponse({"error": "No frame sampled from video."}, status_code=400)
-
-        annotated_frames: List[Image.Image] = []
-        detections_all: List[dict] = []
-        fruit_counts: Dict[str, dict] = {}
-        total_qc = {"fresh": 0, "rotten": 0}
-        dbg = []
-
-        for img in sampled_imgs:
-            det_list, max_conf, dbg_det = detect_and_crop(img)
-            dbg.extend(dbg_det.get("attempts", [])) if isinstance(dbg_det, dict) else None
-            if not det_list:
+            if frame_idx % VIDEO_FRAME_STEP != 0:
+                frame_idx += 1
                 continue
-            filtered = [d for d in det_list if d["det_confidence"] >= 0.7] or det_list
+            sampled_frames += 1
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb)
+
+            det_list, _max_conf, dbg_det = detect_and_crop(img)
+            if isinstance(dbg_det, dict):
+                dbg.extend(dbg_det.get("attempts", []))
+
             frame_detections = []
-            crop_count = len(filtered)
-            for det in filtered:
-                fruit = det["det_label"]
-                arr = preprocess_image(det["crop"])
-                models = predict_image_models(arr)
-                for m in models.values():
-                    m["fruit"] = fruit
-                    m["label"] = f"{fruit}_{m['quality']}"
-                    m["crop_count"] = crop_count
-                agg_model = models.get("mobilenet") or next(iter(models.values()))
-                quality = agg_model["quality"]
-                if quality in total_qc:
-                    total_qc[quality] += 1
-                fc = fruit_counts.setdefault(fruit, {"total": 0, "fresh": 0, "rotten": 0})
-                fc["total"] += 1
-                if quality in fc:
-                    fc[quality] += 1
-                frame_detections.append(
-                    {"detection": {"box": det["box"], "label": fruit, "confidence": det["det_confidence"]}, "models": models}
-                )
-            if frame_detections:
-                detections_all.extend(frame_detections)
-                annotated_frames.append(annotate_pil(img, frame_detections))
+            if det_list:
+                filtered = [d for d in det_list if d["det_confidence"] >= 0.7] or det_list
+                filtered = filtered[:VIDEO_MAX_BOXES]
+                crop_count = len(filtered)
+                crops = [d["crop"] for d in filtered]
+                arr_batch = preprocess_batch(crops)
+                models_batch = predict_models_batch(arr_batch, model_names=["mobilenet"])
+                for det, models in zip(filtered, models_batch):
+                    if not models:
+                        continue
+                    fruit = det["det_label"]
+                    for m in models.values():
+                        m["fruit"] = fruit
+                        m["label"] = f"{fruit}_{m['quality']}"
+                    det_item = {
+                        "detection": {"box": det["box"], "label": fruit, "confidence": det["det_confidence"]},
+                        "models": models,
+                    }
+                    frame_detections.append(det_item)
+                    detections_all.append(det_item)
 
-        if not annotated_frames:
-            return JSONResponse({"error": "No fruits detected in sampled video frames."}, status_code=400)
+            annotated = annotate_pil(img, frame_detections)
+            if first_annotated_img is None:
+                first_annotated_img = annotated
+            writer.write(cv2.cvtColor(np.array(annotated), cv2.COLOR_RGB2BGR))
+            frame_idx += 1
 
-        # tạo video annotate
-        import cv2
-        import numpy as np
-        import base64
+        if sampled_frames == 0:
+            return JSONResponse({"error": "No frame read from video."}, status_code=400)
 
-        first_frame = annotated_frames[0]
-        w, h = first_frame.size
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        writer = cv2.VideoWriter(temp_out.name, fourcc, 8, (w, h))
-
-        def pil_to_bgr(im: Image.Image) -> np.ndarray:
-            return cv2.cvtColor(np.array(im.convert("RGB")), cv2.COLOR_RGB2BGR)
-
-        for im in annotated_frames:
-            writer.write(pil_to_bgr(im))
+        # Ensure file handles are closed before encoding/serving.
         writer.release()
+        writer = None
+        cap.release()
+        cap = None
 
-        with open(temp_out.name, "rb") as f:
-            vid_b64 = base64.b64encode(f.read()).decode("ascii")
-        os.remove(temp_out.name)
+        # Browser-friendly MP4 (H.264 + yuv420p + faststart)
+        if shutil.which("ffmpeg"):
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(out_raw_path),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(out_path),
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if proc.returncode != 0:
+                out_path = out_raw_path
+                out_name = out_raw_name
+            else:
+                try:
+                    os.remove(out_raw_path)
+                except OSError:
+                    pass
+        else:
+            out_path = out_raw_path
+            out_name = out_raw_name
 
         main_detection = detections_all[0] if detections_all else None
-        if main_detection and "models" in main_detection:
-            for m in main_detection["models"].values():
-                m["quality_counts"] = total_qc
-                m["crop_count"] = len(detections_all)
 
-        annotated_image = render_annotated(sampled_imgs[0], detections_all[:5])  # một frame làm thumbnail
+        annotated_image = ""
+        if first_annotated_img is not None:
+            import base64
+
+            buf = io.BytesIO()
+            first_annotated_img.save(buf, format="PNG")
+            annotated_image = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
 
         return {
             "mode": "video",
             "detections": detections_all,
             "fruit_counts": fruit_counts,
-            "sampled_frames": len(sampled_imgs),
+            "sampled_frames": sampled_frames,
             "main_detection": main_detection,
             "annotated_image": annotated_image,
-            "annotated_video": f"data:video/mp4;base64,{vid_b64}",
+            "annotated_video": f"/static/tmp/{out_name}",
+            "annotated_video_mime": "video/mp4",
             "debug": dbg,
         }
     except Exception as exc:
         return JSONResponse({"error": f"Video prediction failed: {exc}"}, status_code=500)
     finally:
+        try:
+            if writer is not None:
+                writer.release()
+        except Exception:
+            pass
+        try:
+            if cap is not None:
+                cap.release()
+        except Exception:
+            pass
         try:
             os.remove(tmp_path)
         except OSError:

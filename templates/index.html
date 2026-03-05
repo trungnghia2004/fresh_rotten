@@ -61,7 +61,7 @@
             <h2>Output</h2>
             <p>Ảnh kèm box và nhãn. Chọn model để xem thống kê.</p>
           </div>
-          <div class="model-switch">
+          <div id="modelSwitch" class="model-switch">
             <label><input type="radio" name="modelPick" value="cnn" checked /> CNN</label>
             <label><input type="radio" name="modelPick" value="mobilenet" /> MobileNet</label>
           </div>
@@ -69,7 +69,8 @@
             <div class="model-block wide">
               <div class="preview-wrap full-height">
                 <img id="outputImage" class="preview hidden" alt="Output image" />
-                <video id="outputVideo" class="preview hidden" controls></video>
+                <video id="outputVideo" class="preview hidden" controls playsinline type="video/mp4"></video>
+                <img id="outputStream" class="preview hidden" alt="Streaming output" />
               </div>
               <div class="model-result" id="outResult">
                 <div>Số lượng: <strong id="outCounts">tươi 0 / hỏng 0</strong></div>
@@ -80,6 +81,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=23"></script>
+    <script src="/static/app.js?v=31"></script>
   </body>
 </html>
