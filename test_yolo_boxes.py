@@ -3,7 +3,7 @@ from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
 # --- CONFIG (chỉnh tại đây, không cần truyền tham số) ---
-IMAGE_PATH = Path(r"F:\fresh_rotten\test\vuon-dau-da-lat-3.jpg")  # đổi sang ảnh bạn muốn test
+IMAGE_PATH = Path(r"F:\fresh_rotten\test\test_image.png")  # đổi sang ảnh bạn muốn test
 MODEL_PATH = Path(r"F:\fresh_rotten\yolo_fruits_and_vegetables_v3.pt")
 CONF_THRESH = 0.3
 OUT_PATH = Path("yolo_boxes.png")

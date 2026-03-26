@@ -32,7 +32,7 @@ IMAGE_SIZE: Tuple[int, int] = (224, 224)
 TRAIN_DIR = Path(os.getenv("TRAIN_DIR", Path(__file__).resolve().parent / "train"))
 CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", Path(__file__).resolve().parent / "class_names.json"))
 ALLOWED_QUALITIES = {"fresh", "rotten"}
-DETECT_MODEL = Path(r"F:\fresh_rotten\yolo_fruits_and_vegetables_v3.pt")
+DETECT_MODEL = Path(r"F:\fresh_rotten\weights\yolo_fruits_and_vegetables_v3.pt")
 
 DETECT_CONF = float(os.getenv("DETECT_CONF", "0.25"))
 USE_TF_GPU = os.getenv("USE_TF_GPU", "0") == "1"
@@ -40,8 +40,8 @@ VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "2")))
 VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "5")))
 
 MODEL_PATHS = {
-    "cnn": Path(__file__).resolve().parent / "cnn_best.keras",
-    "mobilenet": Path(__file__).resolve().parent / "mobilenet_fruit_quality.keras",
+    "cnn": Path(__file__).resolve().parent / "weights/cnn_best.keras",
+    "mobilenet": Path(__file__).resolve().parent / "weights/mobilenet_fruit_quality.keras",
 }
 FALLBACK_FRUITS = [x.strip() for x in os.getenv("FRUIT_NAMES", "").split(",") if x.strip()]
 
