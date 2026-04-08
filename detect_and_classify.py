@@ -8,7 +8,7 @@ from PIL import Image
 from ultralytics import YOLO
 
 # YOLO only: detect fruit boxes and optionally save crops
-DETECT_MODEL = Path(r"F:\fresh_rotten\weights\yolo_fruits_and_vegetables_v3.pt")
+DETECT_MODEL = Path(r"F:\group23_22001611_22001624\weights\yolo_fruits_and_vegetables_v3.pt")
 
 
 def main():
@@ -55,3 +55,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

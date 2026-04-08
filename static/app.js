@@ -135,6 +135,23 @@ fileInput.addEventListener("change", () => {
   setGlobalResult("Đã tải tệp. Bấm Dự đoán để chạy.", "ok");
 });
 
+
+async function startVideoStream(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch("/start_video_stream", { method: "POST", body: fd });
+  const raw = await res.text();
+  let data = {};
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(`API ${res.status}: ${raw || "Phản hồi rỗng từ server"}`);
+  }
+  if (!res.ok) {
+    throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+  }
+  return data;
+}
 async function postFile(url, file) {
   const fd = new FormData();
   fd.append("file", file);
@@ -165,6 +182,29 @@ predictBtn.addEventListener("click", async () => {
   const objectUrl = URL.createObjectURL(file);
 
   setGlobalResult("Đang xử lý...", "ok");
+
+  if (mode === "video") {
+    // Hiện output ngay khi bấm dự đoán (preview tạm), sau đó chuyển sang luồng đã xử lý.
+    showMedia(outputVideo, objectUrl, file.type || "video/mp4");
+    hideMedia(outputImage);
+    hideMedia(outputStream);
+    setGlobalResult("Đang tải video và khởi tạo stream...", "ok");
+
+    try {
+      const stream = await startVideoStream(file);
+      const streamUrl = stream.stream_url.startsWith("http")
+        ? stream.stream_url
+        : new URL(stream.stream_url, window.location.origin).toString();
+      showMedia(outputStream, streamUrl);
+      hideMedia(outputVideo);
+      hideMedia(outputImage);
+      setGlobalResult("Đang stream video đã qua mô hình...", "ok");
+    } catch (err) {
+      // Giữ preview gốc để người dùng vẫn thấy output ngay cả khi stream lỗi.
+      setGlobalResult(`Lỗi gọi API: ${err.message || err}`, "error");
+    }
+    return;
+  }
 
   try {
     const data = await postFile(endpoint, file);
@@ -211,3 +251,6 @@ predictBtn.addEventListener("click", async () => {
 });
 
 syncInputByMode();
+
+
+

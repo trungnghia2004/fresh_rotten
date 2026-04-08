@@ -1,10 +1,10 @@
-import os
+﻿import os
 import shutil
 import random
 from sklearn.model_selection import train_test_split
 
 INPUT_ROOT = r"C:\Users\ADMIN\Downloads\Train"
-OUTPUT_ROOT = r"C:\Users\ADMIN\Downloads\fresh_rotten_split"
+OUTPUT_ROOT = r"C:\Users\ADMIN\Downloads\group23_22001611_22001624_split"
 
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
@@ -84,4 +84,4 @@ copy_files(rotten_train, "train", "rotten")
 copy_files(rotten_val, "val", "rotten")
 copy_files(rotten_test, "test", "rotten")
 
-print("✅ DONE. Dataset saved to:", OUTPUT_ROOT)
+print("âœ… DONE. Dataset saved to:", OUTPUT_ROOT)

@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 from fastapi import FastAPI, File, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 
@@ -32,12 +33,21 @@ IMAGE_SIZE: Tuple[int, int] = (224, 224)
 TRAIN_DIR = Path(os.getenv("TRAIN_DIR", Path(__file__).resolve().parent / "train"))
 CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", Path(__file__).resolve().parent / "class_names.json"))
 ALLOWED_QUALITIES = {"fresh", "rotten"}
-DETECT_MODEL = Path(r"F:\fresh_rotten\weights\yolo_fruits_and_vegetables_v3.pt")
+DETECT_MODEL = Path(r"F:\group23_22001611_22001624\weights\yolo_fruits_and_vegetables_v3.pt")
 
 DETECT_CONF = float(os.getenv("DETECT_CONF", "0.25"))
 USE_TF_GPU = os.getenv("USE_TF_GPU", "0") == "1"
-VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "2")))
-VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "5")))
+VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "1")))
+VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "3")))
+STREAM_DETECT_EVERY = max(1, int(os.getenv("STREAM_DETECT_EVERY", "3")))
+STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("STREAM_CLASSIFY_EVERY", "2")))
+STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "65"))
+STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "640")))
+STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "30"))
+STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "960")))
+STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.2"))
+STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "10")))
+STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "4")))
 
 MODEL_PATHS = {
     "cnn": Path(__file__).resolve().parent / "weights/cnn_best.keras",
@@ -53,6 +63,7 @@ _class_names: List[str] = []
 _label_to_idx: Dict[str, int] = {}
 _idx_to_label: Dict[int, str] = {}
 _detector: YOLO | None = None
+_stream_jobs: Dict[str, str] = {}
 try:
     _font = ImageFont.truetype("arial.ttf", 24)
 except Exception:
@@ -89,6 +100,15 @@ def _get_tf():
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse({"error": f"Internal server error: {exc}"}, status_code=500)
+
+@app.on_event("startup")
+async def on_startup():
+    try:
+        load_assets()
+        print("[INIT] Models loaded.")
+    except Exception as exc:
+        print(f"[INIT] Warmup failed: {exc}")
+
 
 
 def build_class_names(train_dir: Path) -> List[str]:
@@ -168,6 +188,24 @@ def load_assets() -> None:
             pass
 
 
+
+def ensure_detector() -> bool:
+    global _detector
+    if _detector is not None:
+        return True
+    if not YOLO or not DETECT_MODEL.exists():
+        return False
+    try:
+        _detector = YOLO(str(DETECT_MODEL))
+        try:
+            _detector.to("cuda")
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def preprocess_image(img: Image.Image) -> np.ndarray:
     img = img.convert("RGB").resize(IMAGE_SIZE)
     arr = np.asarray(img, dtype=np.float32) / 255.0
@@ -225,6 +263,92 @@ def annotate_pil(image: Image.Image, detections: List[dict]) -> Image.Image:
         draw.rectangle([x1, y1 - th - 8, x1 + tw + 10, y1], fill=(0, 0, 0, 180))
         draw.text((x1 + 5, y1 - th - 4), text, fill=(255, 255, 255), font=_font)
     return img
+
+def annotate_cv2(frame_bgr: np.ndarray, detections: List[dict]) -> np.ndarray:
+    import cv2
+
+    out = frame_bgr.copy()
+    if not detections:
+        return out
+
+    for det in detections:
+        x1, y1, x2, y2 = det["detection"]["box"]
+        fruit = det["detection"]["label"]
+        quality = None
+        if det.get("models"):
+            if "mobilenet" in det["models"]:
+                quality = det["models"]["mobilenet"].get("quality")
+            if quality is None and det["models"]:
+                first_model = next(iter(det["models"].values()))
+                quality = first_model.get("quality")
+        label = f"{fruit}_{quality}" if quality else fruit
+
+        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 0), 2)
+        (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        ty = max(0, y1 - th - 8)
+        cv2.rectangle(out, (x1, ty), (x1 + tw + 8, ty + th + baseline + 6), (0, 0, 0), -1)
+        cv2.putText(out, label, (x1 + 4, ty + th + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+    return out
+
+
+def box_iou(a: List[int], b: List[int]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0, ix2 - ix1)
+    ih = max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+
+def attach_quality_from_previous(current: List[dict], previous: List[dict]) -> None:
+    if not current or not previous:
+        return
+
+    for cur in current:
+        if cur.get("models"):
+            continue
+        cur_label = cur.get("detection", {}).get("label")
+        cur_box = cur.get("detection", {}).get("box")
+        if not cur_label or not cur_box:
+            continue
+
+        best = None
+        best_iou = 0.0
+        for prev in previous:
+            prev_label = prev.get("detection", {}).get("label")
+            prev_box = prev.get("detection", {}).get("box")
+            if prev_label != cur_label or not prev_box:
+                continue
+            iou = box_iou(cur_box, prev_box)
+            if iou > best_iou:
+                best_iou = iou
+                best = prev
+
+        if best is not None and best_iou >= 0.3:
+            prev_models = best.get("models") or {}
+            mb = prev_models.get("mobilenet")
+            if mb:
+                cur["models"] = {
+                    "mobilenet": {
+                        "fruit": mb.get("fruit", cur_label),
+                        "quality": mb.get("quality", "unknown"),
+                        "confidence": mb.get("confidence", 0.0),
+                        "label": f"{cur_label}_{mb.get('quality', 'unknown')}",
+                        "quality_counts": mb.get("quality_counts", {"fresh": 0, "rotten": 0}),
+                    }
+                }
 
 
 def _activation_name(model: tf.keras.Model) -> str | None:
@@ -402,7 +526,7 @@ def predict_models_batch(arr_batch: np.ndarray, model_names: List[str] | None = 
     return out
 
 
-def detect_and_crop(img: Image.Image):
+def detect_and_crop(img: Image.Image, imgsz: int = 640):
     """
     Run YOLO once (using its internal default conf), return boxes sorted by confidence (desc).
     """
@@ -410,7 +534,7 @@ def detect_and_crop(img: Image.Image):
         return [], 0.0, {"attempts": []}
 
     img_rgb = img.convert("RGB")
-    res = _detector(img_rgb, imgsz=640, verbose=False)[0]
+    res = _detector(img_rgb, imgsz=imgsz, verbose=False)[0]
     names = _detector.model.names  # type: ignore
 
     outputs = []
@@ -446,7 +570,7 @@ def detect_and_crop(img: Image.Image):
             debug_list.append({"label": cls_name, "conf": conf, "box": [int(x1), int(y1), int(x2), int(y2)], "expanded_box": [int(x1e), int(y1e), int(x2e), int(y2e)]})
 
     max_conf = float(res.boxes.conf.max().item()) if len(res.boxes.conf) else 0.0
-    dbg = [{"imgsz": 640, "conf": "default", "max_conf": max_conf, "boxes": len(res.boxes), "tops": debug_list}]
+    dbg = [{"imgsz": imgsz, "conf": "default", "max_conf": max_conf, "boxes": len(res.boxes), "tops": debug_list}]
     return outputs, max_conf, {"attempts": dbg}
 
 
@@ -541,7 +665,12 @@ async def predict_video(file: UploadFile = File(...)):
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
     with open(tmp_path, "wb") as tmp:
-        tmp.write(await file.read())
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+    await file.close()
 
     cap = None
     writer = None
@@ -703,7 +832,211 @@ async def predict_video(file: UploadFile = File(...)):
             pass
 
 
+
+@app.post("/start_video_stream")
+async def start_video_stream(file: UploadFile = File(...)):
+    if not file.content_type or not file.content_type.startswith("video/"):
+        return JSONResponse({"error": "Please upload a video."}, status_code=400)
+
+    job_id = uuid.uuid4().hex
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    with open(tmp_path, "wb") as tmp:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+    await file.close()
+    _stream_jobs[job_id] = tmp_path
+    return {"job_id": job_id, "stream_url": f"/stream_video/{job_id}"}
+
+
+@app.get("/stream_video/{job_id}")
+def stream_video(job_id: str):
+    tmp_path = _stream_jobs.get(job_id)
+    if not tmp_path or not os.path.exists(tmp_path):
+        return JSONResponse({"error": "Invalid or expired stream job."}, status_code=404)
+
+    import cv2
+
+    def _iter_frames():
+        cap = None
+        try:
+            cap = cv2.VideoCapture(tmp_path)
+            if not cap.isOpened():
+                return
+
+            source_fps = cap.get(cv2.CAP_PROP_FPS)
+            if not source_fps or source_fps <= 0:
+                source_fps = 25.0
+
+            dynamic_step = max(1, VIDEO_FRAME_STEP)
+            if STREAM_TARGET_FPS > 0 and source_fps > STREAM_TARGET_FPS:
+                dynamic_step = max(dynamic_step, int(round(source_fps / STREAM_TARGET_FPS)))
+
+            output_fps = max(1.0, source_fps / float(dynamic_step))
+            frame_interval = 1.0 / output_fps
+            next_due = time.perf_counter()
+
+            jpeg_quality = max(50, min(95, STREAM_JPEG_QUALITY))
+            frame_idx = 0
+            last_frame_detections: List[dict] = []
+            last_detect_frame_idx = -10**9
+            last_classify_frame_idx = -10**9
+
+            detect_enabled = ensure_detector()
+            classify_enabled = False
+            if detect_enabled:
+                try:
+                    load_assets()
+                    classify_enabled = "mobilenet" in _models
+                except Exception:
+                    classify_enabled = False
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_idx % dynamic_step != 0:
+                    frame_idx += 1
+                    continue
+
+                frame_detections = last_frame_detections
+
+                if detect_enabled:
+                    try:
+                        need_recompute = (not last_frame_detections) or ((frame_idx - last_detect_frame_idx) >= STREAM_DETECT_EVERY)
+                        if need_recompute:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            img = Image.fromarray(frame_rgb)
+                            frame_detections = []
+                            det_list, _max_conf, _dbg_det = detect_and_crop(img, imgsz=STREAM_YOLO_IMGSZ)
+
+                            if det_list:
+                                filtered = [d for d in det_list if d["det_confidence"] >= STREAM_MIN_CONF] or det_list
+                                filtered = filtered[:STREAM_MAX_BOXES]
+
+                                for det in filtered:
+                                    frame_detections.append(
+                                        {
+                                            "detection": {
+                                                "box": det["box"],
+                                                "label": det["det_label"],
+                                                "confidence": det["det_confidence"],
+                                            },
+                                            "models": {},
+                                        }
+                                    )
+
+                                need_classify = classify_enabled and (
+                                    (not last_frame_detections)
+                                    or ((frame_idx - last_classify_frame_idx) >= STREAM_CLASSIFY_EVERY)
+                                )
+                                if need_classify:
+                                    classify_items = filtered[:STREAM_CLASSIFY_MAX_BOXES]
+                                    crops = [d["crop"] for d in classify_items]
+                                    arr_batch = preprocess_batch(crops)
+                                    models_batch = predict_models_batch(arr_batch, model_names=["mobilenet"])
+                                    for i, (det, models) in enumerate(zip(classify_items, models_batch)):
+                                        if not models:
+                                            continue
+                                        fruit = det["det_label"]
+                                        for m in models.values():
+                                            m["fruit"] = fruit
+                                            m["label"] = f"{fruit}_{m['quality']}"
+                                        frame_detections[i]["models"] = models
+                                    last_classify_frame_idx = frame_idx
+
+                                attach_quality_from_previous(frame_detections, last_frame_detections)
+
+                            last_frame_detections = frame_detections
+                            last_detect_frame_idx = frame_idx
+                    except Exception:
+                        frame_detections = last_frame_detections
+
+                render_frame = annotate_cv2(frame, frame_detections) if detect_enabled else frame
+                if STREAM_OUTPUT_MAX_WIDTH > 0 and render_frame.shape[1] > STREAM_OUTPUT_MAX_WIDTH:
+                    scale = STREAM_OUTPUT_MAX_WIDTH / float(render_frame.shape[1])
+                    out_w = STREAM_OUTPUT_MAX_WIDTH
+                    out_h = max(2, int(round(render_frame.shape[0] * scale)))
+                    render_frame = cv2.resize(render_frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
+                ok, encoded = cv2.imencode(".jpg", render_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+                if ok:
+                    payload = encoded.tobytes()
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Cache-Control: no-cache\r\n\r\n" + payload + b"\r\n"
+                    )
+
+                frame_idx += 1
+
+                next_due += frame_interval
+                sleep_s = next_due - time.perf_counter()
+                if sleep_s > 0:
+                    time.sleep(min(sleep_s, 0.05))
+                else:
+                    next_due = time.perf_counter()
+        finally:
+            try:
+                if cap is not None:
+                    cap.release()
+            except Exception:
+                pass
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            _stream_jobs.pop(job_id, None)
+
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+    return StreamingResponse(
+        _iter_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers=headers,
+    )
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
