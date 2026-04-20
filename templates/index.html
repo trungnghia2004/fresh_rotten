@@ -3,84 +3,59 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>So sánh CNN và MobileNet</title>
-    <link rel="stylesheet" href="/static/style.css?v=23" />
+    <title>Fresh&Rotten</title>
+    <link rel="stylesheet" href="/static/style.css?v=2" />
   </head>
   <body>
-    <div class="bg"></div>
     <main class="wrap">
-      <header class="hero">
-        <div class="hero-text">
-          <div class="badge">Fruit Quality Compare</div>
-          <h1>CNN vs MobileNet</h1>
-          <p>Tải ảnh hoặc video một lần, hệ thống hiển thị kết quả CNN và MobileNet để so sánh.</p>
-        </div>
-      </header>
+      <section class="card">
+        <h1>Fresh&Rotten</h1>
+        <p>Tải ảnh hoặc video một lần, hệ thống hiển thị kết quả để so sánh.</p>
 
-      <section class="control-card card">
-        <div class="card-head">
-          <h2>Dữ liệu đầu vào</h2>
-          <p>Chọn loại dữ liệu rồi tải tệp lên.</p>
+        <div class="mode-switch">
+          <label><input type="radio" name="uploadMode" value="image" checked /> Ảnh</label>
+          <label><input type="radio" name="uploadMode" value="video" /> Video</label>
         </div>
-        <div class="card-body">
-          <div class="mode-switch">
-            <label class="mode-item">
-              <input type="radio" name="uploadMode" value="image" checked />
-              <span>Ảnh</span>
-            </label>
-            <label class="mode-item">
-              <input type="radio" name="uploadMode" value="video" />
-              <span>Video</span>
-            </label>
-          </div>
-          <input id="fileInput" type="file" accept="image/*" />
-          <button id="predictBtn">Dự đoán</button>
-          <div class="hint" id="inputHint">Đang ở chế độ ảnh.</div>
-          <div id="globalResult" class="result empty">Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.</div>
-        </div>
+
+        <input id="fileInput" type="file" accept="image/*" />
+        <button id="predictBtn">Dự đoán</button>
+
+        <div id="inputHint" class="hint">Đang ở chế độ ảnh.</div>
+        <div id="globalResult" class="result empty">Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.</div>
       </section>
 
-      <section class="io-layout single">
-        <article class="card io-card">
-          <div class="card-head">
-            <h2>Input</h2>
-            <p>Ảnh/video đầu vào.</p>
-          </div>
-          <div class="panel-stack">
-            <div class="model-block">
-              <div class="preview-wrap">
-                <img id="inputImage" class="preview hidden" alt="Input image" />
-                <video id="inputVideo" class="preview hidden" controls></video>
-              </div>
-            </div>
+      <section class="grid">
+        <article class="card">
+          <h2>Input</h2>
+          <div class="preview-wrap">
+            <img id="inputImage" class="preview hidden" alt="Input image" />
+            <video id="inputVideo" class="preview hidden" controls></video>
           </div>
         </article>
 
-        <article class="card io-card">
-          <div class="card-head">
-            <h2>Output</h2>
-            <p>Ảnh/video kèm box và nhãn. Chọn model để xem thống kê.</p>
-          </div>
-          <div id="modelSwitch" class="model-switch">
+        <article class="card">
+          <h2>Output</h2>
+          <p>Ảnh/video kèm box và nhãn.</p>
+
+          <div id="modelSwitch" class="mode-switch">
             <label><input type="radio" name="modelPick" value="cnn" checked /> CNN</label>
             <label><input type="radio" name="modelPick" value="mobilenet" /> MobileNet</label>
           </div>
-          <div class="panel-stack">
-            <div class="model-block wide">
-              <div class="preview-wrap full-height">
-                <img id="outputImage" class="preview hidden" alt="Output image" />
-                <video id="outputVideo" class="preview hidden" controls playsinline type="video/mp4"></video>
-                <img id="outputStream" class="preview hidden" alt="Streaming output" />
-              </div>
-              <div class="model-result" id="outResult">
-                <div>Số lượng: <strong id="outCounts">tươi 0 / hỏng 0</strong></div>
-              </div>
-            </div>
+
+          <div class="preview-wrap">
+            <img id="outputImage" class="preview hidden" alt="Output image" />
+            <video id="outputVideo" class="preview hidden" controls playsinline type="video/mp4"></video>
+            <img id="outputStream" class="preview hidden" alt="Streaming output" />
+          </div>
+
+          <div class="model-result" id="outResult">
+            <div>Số lượng: <strong id="outCounts">tươi 0 / hỏng 0 (crops 0)</strong></div>
           </div>
         </article>
       </section>
     </main>
 
-    <script src="/static/app.js?v=33"></script>
+    <script src="/static/app.js?v=1"></script>
   </body>
 </html>
+

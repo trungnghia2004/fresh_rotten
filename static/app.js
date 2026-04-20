@@ -14,13 +14,10 @@ const modelRadios = document.querySelectorAll('input[name="modelPick"]');
 const modelSwitch = document.getElementById("modelSwitch");
 
 const defaultCountsText = "tươi 0 / hỏng 0 (crops 0)";
-
 let latestModels = { cnn: null, mobilenet: null };
 let latestMode = "image";
 
-function setText(el, value) {
-  if (el) el.textContent = value;
-}
+function setText(el, value) { if (el) el.textContent = value; }
 
 function hideMedia(el) {
   if (!el) return;
@@ -36,9 +33,7 @@ function hideMedia(el) {
 
 function showMedia(el, url, mime) {
   if (!el) return;
-  if (el.tagName === "VIDEO" && mime) {
-    el.type = mime;
-  }
+  if (el.tagName === "VIDEO" && mime) el.type = mime;
   el.src = url;
   if (el.tagName === "VIDEO") {
     el.muted = true;
@@ -54,16 +49,14 @@ function getMode() {
 }
 
 function resetAll() {
-  hideMedia(inputImage);
-  hideMedia(inputVideo);
-  hideMedia(outputImage);
-  hideMedia(outputVideo);
-  hideMedia(outputStream);
+  hideMedia(inputImage); hideMedia(inputVideo);
+  hideMedia(outputImage); hideMedia(outputVideo); hideMedia(outputStream);
   setText(outCounts, defaultCountsText);
   latestModels = { cnn: null, mobilenet: null };
 }
 
 function setGlobalResult(text, state = "ok") {
+  if (!globalResult) return;
   globalResult.textContent = text;
   globalResult.className = `result ${state}`;
 }
@@ -76,16 +69,15 @@ function syncInputByMode() {
 
   if (mode === "image") {
     fileInput.accept = "image/*";
-    inputHint.textContent = "Đang ở chế độ ảnh.";
-    if (modelSwitch) modelSwitch.classList.remove("hidden");
-    if (outResult) outResult.classList.remove("hidden");
+    setText(inputHint, "Đang ở chế độ ảnh.");
+    modelSwitch?.classList.remove("hidden");
+    outResult?.classList.remove("hidden");
   } else {
     fileInput.accept = "video/*";
-    inputHint.textContent = "Đang ở chế độ video.";
-    if (modelSwitch) modelSwitch.classList.add("hidden");
-    if (outResult) outResult.classList.add("hidden");
+    setText(inputHint, "Đang ở chế độ video.");
+    modelSwitch?.classList.add("hidden");
+    outResult?.classList.add("hidden");
   }
-
   setGlobalResult("Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.", "empty");
 }
 
@@ -94,7 +86,6 @@ function updateCounts() {
     setText(outCounts, "");
     return;
   }
-
   const picked = document.querySelector('input[name="modelPick"]:checked')?.value || "cnn";
   const modelData = latestModels[picked];
   if (!modelData) {
@@ -113,16 +104,12 @@ function updateCounts() {
 }
 
 modelRadios.forEach((el) => el.addEventListener("change", updateCounts));
-
-document.querySelectorAll('input[name="uploadMode"]').forEach((el) => {
-  el.addEventListener("change", syncInputByMode);
-});
+document.querySelectorAll('input[name="uploadMode"]').forEach((el) => el.addEventListener("change", syncInputByMode));
 
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
   resetAll();
   if (!file) return;
-
   const mode = getMode();
   const objectUrl = URL.createObjectURL(file);
   if (mode === "image") {
@@ -135,37 +122,27 @@ fileInput.addEventListener("change", () => {
   setGlobalResult("Đã tải tệp. Bấm Dự đoán để chạy.", "ok");
 });
 
-
 async function startVideoStream(file) {
   const fd = new FormData();
   fd.append("file", file);
   const res = await fetch("/start_video_stream", { method: "POST", body: fd });
   const raw = await res.text();
   let data = {};
-  try {
-    data = raw ? JSON.parse(raw) : {};
-  } catch {
-    throw new Error(`API ${res.status}: ${raw || "Phản hồi rỗng từ server"}`);
-  }
-  if (!res.ok) {
-    throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
-  }
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch { throw new Error(`API ${res.status}: ${raw || "Phản hồi rỗng từ server"}`); }
+  if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
   return data;
 }
+
 async function postFile(url, file) {
   const fd = new FormData();
   fd.append("file", file);
   const res = await fetch(url, { method: "POST", body: fd });
   const raw = await res.text();
   let data = {};
-  try {
-    data = raw ? JSON.parse(raw) : {};
-  } catch {
-    throw new Error(`API ${res.status}: ${raw || "Phản hồi rỗng từ server"}`);
-  }
-  if (!res.ok) {
-    throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
-  }
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch { throw new Error(`API ${res.status}: ${raw || "Phản hồi rỗng từ server"}`); }
+  if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
   return data;
 }
 
@@ -184,7 +161,6 @@ predictBtn.addEventListener("click", async () => {
   setGlobalResult("Đang xử lý...", "ok");
 
   if (mode === "video") {
-    // Hiện output ngay khi bấm dự đoán (preview tạm), sau đó chuyển sang luồng đã xử lý.
     showMedia(outputVideo, objectUrl, file.type || "video/mp4");
     hideMedia(outputImage);
     hideMedia(outputStream);
@@ -200,7 +176,6 @@ predictBtn.addEventListener("click", async () => {
       hideMedia(outputImage);
       setGlobalResult("Đang stream video đã qua mô hình...", "ok");
     } catch (err) {
-      // Giữ preview gốc để người dùng vẫn thấy output ngay cả khi stream lỗi.
       setGlobalResult(`Lỗi gọi API: ${err.message || err}`, "error");
     }
     return;
@@ -208,7 +183,6 @@ predictBtn.addEventListener("click", async () => {
 
   try {
     const data = await postFile(endpoint, file);
-
     const annotated = data.annotated_image || null;
     const annotatedVideo = data.annotated_video || null;
 
@@ -227,10 +201,6 @@ predictBtn.addEventListener("click", async () => {
     } else if (mode === "image") {
       showMedia(outputImage, objectUrl);
       hideMedia(outputVideo);
-      hideMedia(outputStream);
-    } else {
-      showMedia(outputVideo, objectUrl);
-      hideMedia(outputImage);
       hideMedia(outputStream);
     }
 
@@ -251,6 +221,3 @@ predictBtn.addEventListener("click", async () => {
 });
 
 syncInputByMode();
-
-
-

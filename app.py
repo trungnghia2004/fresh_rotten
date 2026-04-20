@@ -17,6 +17,7 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
+from pipeline_stream import StreamConfig, stream_video_frames
 
 try:
     from ultralytics import YOLO
@@ -29,13 +30,23 @@ ULTRA_HOME.mkdir(exist_ok=True)
 os.environ.setdefault("SETTINGS_DIR", str(ULTRA_HOME))
 os.environ.setdefault("ULTRALYTICS_CACHE_DIR", str(ULTRA_HOME))
 
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATES_DIR = BASE_DIR / "templates"
+
 IMAGE_SIZE: Tuple[int, int] = (224, 224)
-TRAIN_DIR = Path(os.getenv("TRAIN_DIR", Path(__file__).resolve().parent / "train"))
-CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", Path(__file__).resolve().parent / "class_names.json"))
+TRAIN_DIR = Path(os.getenv("TRAIN_DIR", BASE_DIR / "train"))
+CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", BASE_DIR / "class_names.json"))
 ALLOWED_QUALITIES = {"fresh", "rotten"}
 DETECT_MODEL = Path(r"F:\group23_22001611_22001624\weights\yolo_fruits_and_vegetables_v3.pt")
 
-DETECT_CONF = float(os.getenv("DETECT_CONF", "0.25"))
+DETECT_CONF = float(os.getenv("DETECT_CONF", "0.6"))
+DETECT_IOU = float(os.getenv("DETECT_IOU", "0.35"))
+DETECT_MAX_DET = max(1, int(os.getenv("DETECT_MAX_DET", "100")))
+DETECT_MIN_AREA_RATIO = float(os.getenv("DETECT_MIN_AREA_RATIO", "0.002"))
+DETECT_ALLOWED_LABELS = {
+    x.strip().lower() for x in os.getenv("DETECT_ALLOWED_LABELS", "").split(",") if x.strip()
+}
 USE_TF_GPU = os.getenv("USE_TF_GPU", "0") == "1"
 VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "1")))
 VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "3")))
@@ -45,18 +56,18 @@ STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "65"))
 STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "640")))
 STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "30"))
 STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "960")))
-STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.2"))
+STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.35"))
 STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "10")))
 STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "4")))
 
 MODEL_PATHS = {
-    "cnn": Path(__file__).resolve().parent / "weights/cnn_best.keras",
-    "mobilenet": Path(__file__).resolve().parent / "weights/mobilenet_fruit_quality.keras",
+    "cnn": BASE_DIR / "weights/cnn_best.keras",
+    "mobilenet": BASE_DIR / "weights/mobilenet_fruit_quality.keras",
 }
 FALLBACK_FRUITS = [x.strip() for x in os.getenv("FRUIT_NAMES", "").split(",") if x.strip()]
 
 app = FastAPI(title="Fruit Quality Compare")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 _models: Dict[str, tf.keras.Model] = {}
 _class_names: List[str] = []
@@ -528,20 +539,31 @@ def predict_models_batch(arr_batch: np.ndarray, model_names: List[str] | None = 
 
 def detect_and_crop(img: Image.Image, imgsz: int = 640):
     """
-    Run YOLO once (using its internal default conf), return boxes sorted by confidence (desc).
+    Run YOLO with explicit conf/iou filters and return boxes sorted by confidence (desc).
     """
     if _detector is None:
         return [], 0.0, {"attempts": []}
 
     img_rgb = img.convert("RGB")
-    res = _detector(img_rgb, imgsz=imgsz, verbose=False)[0]
+    res = _detector(
+        img_rgb,
+        imgsz=imgsz,
+        conf=DETECT_CONF,
+        iou=DETECT_IOU,
+        max_det=DETECT_MAX_DET,
+        agnostic_nms=True,
+        verbose=False,
+    )[0]
     names = _detector.model.names  # type: ignore
 
     outputs = []
     debug_list = []
+    filtered_small = 0
+    filtered_label = 0
     if len(res.boxes):
         sorted_idx = np.argsort(res.boxes.conf.cpu().numpy())[::-1]
         W, H = img.size
+        total_area = float(max(1, W * H))
         pad_ratio = 0.05  # mở rộng 5% mỗi chiều trước khi crop
         for idx in sorted_idx:
             box = res.boxes.xyxy[idx]
@@ -549,6 +571,15 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640):
             conf = float(res.boxes.conf[idx])
             cls_name = names.get(int(cls), str(int(cls)))
             x1, y1, x2, y2 = map(float, box.cpu().numpy().tolist())
+
+            box_area_ratio = max(0.0, (x2 - x1) * (y2 - y1) / total_area)
+            if box_area_ratio < DETECT_MIN_AREA_RATIO:
+                filtered_small += 1
+                continue
+            if DETECT_ALLOWED_LABELS and cls_name.strip().lower() not in DETECT_ALLOWED_LABELS:
+                filtered_label += 1
+                continue
+
             # mở rộng box
             w = x2 - x1
             h = y2 - y1
@@ -559,26 +590,48 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640):
             x2e = min(W, x2 + dx)
             y2e = min(H, y2 + dy)
             crop = img.crop((x1e, y1e, x2e, y2e)).convert("RGB")
+
             outputs.append(
                 {
                     "box": [int(x1), int(y1), int(x2), int(y2)],
                     "det_label": cls_name,
                     "det_confidence": conf,
+                    "det_area_ratio": round(box_area_ratio, 6),
                     "crop": crop,
                 }
             )
-            debug_list.append({"label": cls_name, "conf": conf, "box": [int(x1), int(y1), int(x2), int(y2)], "expanded_box": [int(x1e), int(y1e), int(x2e), int(y2e)]})
+            debug_list.append(
+                {
+                    "label": cls_name,
+                    "conf": conf,
+                    "area_ratio": round(box_area_ratio, 6),
+                    "box": [int(x1), int(y1), int(x2), int(y2)],
+                    "expanded_box": [int(x1e), int(y1e), int(x2e), int(y2e)],
+                }
+            )
 
     max_conf = float(res.boxes.conf.max().item()) if len(res.boxes.conf) else 0.0
-    dbg = [{"imgsz": imgsz, "conf": "default", "max_conf": max_conf, "boxes": len(res.boxes), "tops": debug_list}]
+    dbg = [
+        {
+            "imgsz": imgsz,
+            "conf": DETECT_CONF,
+            "iou": DETECT_IOU,
+            "max_conf": max_conf,
+            "boxes_raw": len(res.boxes),
+            "boxes_kept": len(outputs),
+            "filtered_small": filtered_small,
+            "filtered_label": filtered_label,
+            "tops": debug_list,
+        }
+    ]
     return outputs, max_conf, {"attempts": dbg}
-
-
 @app.get("/", response_class=HTMLResponse)
 def index():
-    with open(os.path.join("templates", "index.html"), "r", encoding="utf-8") as f:
+    template_path = TEMPLATES_DIR / "index.html"
+    if not template_path.exists():
+        return HTMLResponse("<h1>Missing template: templates/index.html</h1>", status_code=500)
+    with open(template_path, "r", encoding="utf-8") as f:
         return f.read()
-
 
 @app.post("/predict_image")
 async def predict_image(file: UploadFile = File(...)):
@@ -691,7 +744,7 @@ async def predict_video(file: UploadFile = File(...)):
         if w <= 0 or h <= 0:
             return JSONResponse({"error": "Invalid video size."}, status_code=400)
 
-        out_dir = Path("static") / "tmp"
+        out_dir = STATIC_DIR / "tmp"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_name = f"annotated_{uuid.uuid4().hex}.mp4"
         out_raw_name = f"annotated_{uuid.uuid4().hex}_raw.mp4"
@@ -858,140 +911,40 @@ def stream_video(job_id: str):
     if not tmp_path or not os.path.exists(tmp_path):
         return JSONResponse({"error": "Invalid or expired stream job."}, status_code=404)
 
-    import cv2
+    cfg = StreamConfig(
+        video_frame_step=VIDEO_FRAME_STEP,
+        stream_target_fps=STREAM_TARGET_FPS,
+        stream_jpeg_quality=STREAM_JPEG_QUALITY,
+        stream_detect_every=STREAM_DETECT_EVERY,
+        stream_yolo_imgsz=STREAM_YOLO_IMGSZ,
+        stream_min_conf=STREAM_MIN_CONF,
+        stream_max_boxes=STREAM_MAX_BOXES,
+        stream_classify_every=STREAM_CLASSIFY_EVERY,
+        stream_classify_max_boxes=STREAM_CLASSIFY_MAX_BOXES,
+        stream_output_max_width=STREAM_OUTPUT_MAX_WIDTH,
+    )
 
-    def _iter_frames():
-        cap = None
+    def _cleanup():
         try:
-            cap = cv2.VideoCapture(tmp_path)
-            if not cap.isOpened():
-                return
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        _stream_jobs.pop(job_id, None)
 
-            source_fps = cap.get(cv2.CAP_PROP_FPS)
-            if not source_fps or source_fps <= 0:
-                source_fps = 25.0
-
-            dynamic_step = max(1, VIDEO_FRAME_STEP)
-            if STREAM_TARGET_FPS > 0 and source_fps > STREAM_TARGET_FPS:
-                dynamic_step = max(dynamic_step, int(round(source_fps / STREAM_TARGET_FPS)))
-
-            output_fps = max(1.0, source_fps / float(dynamic_step))
-            frame_interval = 1.0 / output_fps
-            next_due = time.perf_counter()
-
-            jpeg_quality = max(50, min(95, STREAM_JPEG_QUALITY))
-            frame_idx = 0
-            last_frame_detections: List[dict] = []
-            last_detect_frame_idx = -10**9
-            last_classify_frame_idx = -10**9
-
-            detect_enabled = ensure_detector()
-            classify_enabled = False
-            if detect_enabled:
-                try:
-                    load_assets()
-                    classify_enabled = "mobilenet" in _models
-                except Exception:
-                    classify_enabled = False
-
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                if frame_idx % dynamic_step != 0:
-                    frame_idx += 1
-                    continue
-
-                frame_detections = last_frame_detections
-
-                if detect_enabled:
-                    try:
-                        need_recompute = (not last_frame_detections) or ((frame_idx - last_detect_frame_idx) >= STREAM_DETECT_EVERY)
-                        if need_recompute:
-                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                            img = Image.fromarray(frame_rgb)
-                            frame_detections = []
-                            det_list, _max_conf, _dbg_det = detect_and_crop(img, imgsz=STREAM_YOLO_IMGSZ)
-
-                            if det_list:
-                                filtered = [d for d in det_list if d["det_confidence"] >= STREAM_MIN_CONF] or det_list
-                                filtered = filtered[:STREAM_MAX_BOXES]
-
-                                for det in filtered:
-                                    frame_detections.append(
-                                        {
-                                            "detection": {
-                                                "box": det["box"],
-                                                "label": det["det_label"],
-                                                "confidence": det["det_confidence"],
-                                            },
-                                            "models": {},
-                                        }
-                                    )
-
-                                need_classify = classify_enabled and (
-                                    (not last_frame_detections)
-                                    or ((frame_idx - last_classify_frame_idx) >= STREAM_CLASSIFY_EVERY)
-                                )
-                                if need_classify:
-                                    classify_items = filtered[:STREAM_CLASSIFY_MAX_BOXES]
-                                    crops = [d["crop"] for d in classify_items]
-                                    arr_batch = preprocess_batch(crops)
-                                    models_batch = predict_models_batch(arr_batch, model_names=["mobilenet"])
-                                    for i, (det, models) in enumerate(zip(classify_items, models_batch)):
-                                        if not models:
-                                            continue
-                                        fruit = det["det_label"]
-                                        for m in models.values():
-                                            m["fruit"] = fruit
-                                            m["label"] = f"{fruit}_{m['quality']}"
-                                        frame_detections[i]["models"] = models
-                                    last_classify_frame_idx = frame_idx
-
-                                attach_quality_from_previous(frame_detections, last_frame_detections)
-
-                            last_frame_detections = frame_detections
-                            last_detect_frame_idx = frame_idx
-                    except Exception:
-                        frame_detections = last_frame_detections
-
-                render_frame = annotate_cv2(frame, frame_detections) if detect_enabled else frame
-                if STREAM_OUTPUT_MAX_WIDTH > 0 and render_frame.shape[1] > STREAM_OUTPUT_MAX_WIDTH:
-                    scale = STREAM_OUTPUT_MAX_WIDTH / float(render_frame.shape[1])
-                    out_w = STREAM_OUTPUT_MAX_WIDTH
-                    out_h = max(2, int(round(render_frame.shape[0] * scale)))
-                    render_frame = cv2.resize(render_frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
-
-                ok, encoded = cv2.imencode(".jpg", render_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-                if ok:
-                    payload = encoded.tobytes()
-                    yield (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Cache-Control: no-cache\r\n\r\n" + payload + b"\r\n"
-                    )
-
-                frame_idx += 1
-
-                next_due += frame_interval
-                sleep_s = next_due - time.perf_counter()
-                if sleep_s > 0:
-                    time.sleep(min(sleep_s, 0.05))
-                else:
-                    next_due = time.perf_counter()
-        finally:
-            try:
-                if cap is not None:
-                    cap.release()
-            except Exception:
-                pass
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
-            _stream_jobs.pop(job_id, None)
+    stream_iter = stream_video_frames(
+        tmp_path=tmp_path,
+        cfg=cfg,
+        ensure_detector=ensure_detector,
+        load_assets=load_assets,
+        detect_and_crop=detect_and_crop,
+        preprocess_batch=preprocess_batch,
+        predict_models_batch=predict_models_batch,
+        attach_quality_from_previous=attach_quality_from_previous,
+        annotate_cv2=annotate_cv2,
+        models_ref=_models,
+        cleanup=_cleanup,
+    )
 
     headers = {
         "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -999,7 +952,7 @@ def stream_video(job_id: str):
         "Expires": "0",
     }
     return StreamingResponse(
-        _iter_frames(),
+        stream_iter,
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers=headers,
     )
@@ -1007,6 +960,13 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
+
+
+
+
+
 
 
 
