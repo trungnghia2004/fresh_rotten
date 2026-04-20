@@ -12,8 +12,8 @@ const outCounts = document.getElementById("outCounts");
 const outResult = document.getElementById("outResult");
 const modelRadios = document.querySelectorAll('input[name="modelPick"]');
 const modelSwitch = document.getElementById("modelSwitch");
+const inputCard = document.getElementById("inputCard");
 const cameraControls = document.getElementById("cameraControls");
-const cameraSource = document.getElementById("cameraSource");
 
 const defaultCountsText = "tươi 0 / hỏng 0 (crops 0)";
 let latestModels = { cnn: null, mobilenet: null };
@@ -69,6 +69,11 @@ function getMode() {
   return checked ? checked.value : "image";
 }
 
+function getCameraType() {
+  const checked = document.querySelector('input[name="cameraType"]:checked');
+  return checked ? checked.value : "laptop";
+}
+
 function resetAll() {
   stopBrowserCameraLoop();
   hideMedia(inputImage); hideMedia(inputVideo);
@@ -90,6 +95,7 @@ function syncInputByMode() {
   if (mode !== "camera") fileInput.value = "";
 
   if (mode === "image") {
+    inputCard?.classList.remove("hidden");
     fileInput.classList.remove("hidden");
     cameraControls?.classList.add("hidden");
     fileInput.accept = "image/*";
@@ -97,6 +103,7 @@ function syncInputByMode() {
     modelSwitch?.classList.remove("hidden");
     outResult?.classList.remove("hidden");
   } else if (mode === "video") {
+    inputCard?.classList.remove("hidden");
     fileInput.classList.remove("hidden");
     cameraControls?.classList.add("hidden");
     fileInput.accept = "video/*";
@@ -104,6 +111,7 @@ function syncInputByMode() {
     modelSwitch?.classList.add("hidden");
     outResult?.classList.add("hidden");
   } else {
+    inputCard?.classList.add("hidden");
     fileInput.classList.add("hidden");
     cameraControls?.classList.remove("hidden");
     setText(inputHint, "Đang ở chế độ camera realtime.");
@@ -267,6 +275,10 @@ async function startBrowserCameraLoop() {
   }, BROWSER_CAM_INTERVAL_MS);
 }
 
+function isMobileBrowser() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+}
+
 async function postFile(url, file) {
   const fd = new FormData();
   fd.append("file", file);
@@ -292,13 +304,22 @@ predictBtn.addEventListener("click", async () => {
     hideMedia(inputImage);
     hideMedia(outputStream);
     try {
-      const source = cameraSource?.value ?? "0";
-      if (source === "browser") {
+      const cameraType = getCameraType();
+      if (cameraType === "phone" && isMobileBrowser()) {
         await startBrowserCameraLoop();
       } else {
         stopBrowserCameraLoop();
         hideMedia(inputVideo);
-        const stream = await startCameraStream(source);
+        let stream;
+        if (cameraType === "laptop") {
+          stream = await startCameraStream(0);
+        } else {
+          try {
+            stream = await startCameraStream(1);
+          } catch {
+            stream = await startCameraStream(2);
+          }
+        }
         const streamUrl = stream.stream_url.startsWith("http")
           ? stream.stream_url
           : new URL(stream.stream_url, window.location.origin).toString();
