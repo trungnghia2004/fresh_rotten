@@ -17,7 +17,7 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-from pipeline_stream import StreamConfig, stream_video_frames
+from pipeline_stream import StreamConfig, stream_camera_frames, stream_video_frames
 
 try:
     from ultralytics import YOLO
@@ -52,10 +52,10 @@ VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "1")))
 VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "3")))
 STREAM_DETECT_EVERY = max(1, int(os.getenv("STREAM_DETECT_EVERY", "3")))
 STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("STREAM_CLASSIFY_EVERY", "2")))
-STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "65"))
+STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "85"))
 STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "640")))
 STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "30"))
-STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "960")))
+STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "1280")))
 STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.35"))
 STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "10")))
 STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "4")))
@@ -75,6 +75,7 @@ _label_to_idx: Dict[str, int] = {}
 _idx_to_label: Dict[int, str] = {}
 _detector: YOLO | None = None
 _stream_jobs: Dict[str, str] = {}
+_camera_jobs: Dict[str, int] = {}
 try:
     _font = ImageFont.truetype("arial.ttf", 24)
 except Exception:
@@ -905,6 +906,16 @@ async def start_video_stream(file: UploadFile = File(...)):
     return {"job_id": job_id, "stream_url": f"/stream_video/{job_id}"}
 
 
+@app.post("/start_camera_stream")
+async def start_camera_stream(source: int = 0):
+    if source not in (0, 1, 2):
+        return JSONResponse({"error": "Camera source must be 0, 1, or 2."}, status_code=400)
+
+    job_id = uuid.uuid4().hex
+    _camera_jobs[job_id] = int(source)
+    return {"job_id": job_id, "stream_url": f"/stream_camera/{job_id}"}
+
+
 @app.get("/stream_video/{job_id}")
 def stream_video(job_id: str):
     tmp_path = _stream_jobs.get(job_id)
@@ -934,6 +945,54 @@ def stream_video(job_id: str):
 
     stream_iter = stream_video_frames(
         tmp_path=tmp_path,
+        cfg=cfg,
+        ensure_detector=ensure_detector,
+        load_assets=load_assets,
+        detect_and_crop=detect_and_crop,
+        preprocess_batch=preprocess_batch,
+        predict_models_batch=predict_models_batch,
+        attach_quality_from_previous=attach_quality_from_previous,
+        annotate_cv2=annotate_cv2,
+        models_ref=_models,
+        cleanup=_cleanup,
+    )
+
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+    return StreamingResponse(
+        stream_iter,
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers=headers,
+    )
+
+
+@app.get("/stream_camera/{job_id}")
+def stream_camera(job_id: str):
+    camera_source = _camera_jobs.get(job_id)
+    if camera_source is None:
+        return JSONResponse({"error": "Invalid or expired camera stream job."}, status_code=404)
+
+    cfg = StreamConfig(
+        video_frame_step=VIDEO_FRAME_STEP,
+        stream_target_fps=STREAM_TARGET_FPS,
+        stream_jpeg_quality=STREAM_JPEG_QUALITY,
+        stream_detect_every=STREAM_DETECT_EVERY,
+        stream_yolo_imgsz=STREAM_YOLO_IMGSZ,
+        stream_min_conf=STREAM_MIN_CONF,
+        stream_max_boxes=STREAM_MAX_BOXES,
+        stream_classify_every=STREAM_CLASSIFY_EVERY,
+        stream_classify_max_boxes=STREAM_CLASSIFY_MAX_BOXES,
+        stream_output_max_width=STREAM_OUTPUT_MAX_WIDTH,
+    )
+
+    def _cleanup():
+        _camera_jobs.pop(job_id, None)
+
+    stream_iter = stream_camera_frames(
+        camera_source=camera_source,
         cfg=cfg,
         ensure_detector=ensure_detector,
         load_assets=load_assets,

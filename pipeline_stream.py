@@ -3,7 +3,7 @@
 import os
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterator, List
+from typing import Callable, Dict, Iterator, List, Union
 
 import numpy as np
 from PIL import Image
@@ -78,9 +78,22 @@ def stabilize_labels_with_previous(filtered: List[dict], previous: List[dict]) -
 
     return out
 
-def stream_video_frames(
+def _open_capture(capture_source: Union[str, int]):
+    import cv2
+
+    if isinstance(capture_source, int):
+        cap = cv2.VideoCapture(capture_source, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(capture_source)
+    else:
+        cap = cv2.VideoCapture(capture_source)
+    return cap
+
+
+def _stream_capture_frames(
     *,
-    tmp_path: str,
+    capture_source: Union[str, int],
     cfg: StreamConfig,
     ensure_detector: Callable[[], bool],
     load_assets: Callable[[], None],
@@ -96,7 +109,7 @@ def stream_video_frames(
 
     cap = None
     try:
-        cap = cv2.VideoCapture(tmp_path)
+        cap = _open_capture(capture_source)
         if not cap.isOpened():
             return
 
@@ -236,5 +249,63 @@ def stream_video_frames(
         except Exception:
             pass
         cleanup()
+
+
+def stream_video_frames(
+    *,
+    tmp_path: str,
+    cfg: StreamConfig,
+    ensure_detector: Callable[[], bool],
+    load_assets: Callable[[], None],
+    detect_and_crop: Callable[..., tuple],
+    preprocess_batch: Callable[[List[Image.Image]], np.ndarray],
+    predict_models_batch: Callable[..., List[Dict[str, dict]]],
+    attach_quality_from_previous: Callable[[List[dict], List[dict]], None],
+    annotate_cv2: Callable[[np.ndarray, List[dict]], np.ndarray],
+    models_ref: Dict[str, object],
+    cleanup: Callable[[], None],
+) -> Iterator[bytes]:
+    return _stream_capture_frames(
+        capture_source=tmp_path,
+        cfg=cfg,
+        ensure_detector=ensure_detector,
+        load_assets=load_assets,
+        detect_and_crop=detect_and_crop,
+        preprocess_batch=preprocess_batch,
+        predict_models_batch=predict_models_batch,
+        attach_quality_from_previous=attach_quality_from_previous,
+        annotate_cv2=annotate_cv2,
+        models_ref=models_ref,
+        cleanup=cleanup,
+    )
+
+
+def stream_camera_frames(
+    *,
+    camera_source: int,
+    cfg: StreamConfig,
+    ensure_detector: Callable[[], bool],
+    load_assets: Callable[[], None],
+    detect_and_crop: Callable[..., tuple],
+    preprocess_batch: Callable[[List[Image.Image]], np.ndarray],
+    predict_models_batch: Callable[..., List[Dict[str, dict]]],
+    attach_quality_from_previous: Callable[[List[dict], List[dict]], None],
+    annotate_cv2: Callable[[np.ndarray, List[dict]], np.ndarray],
+    models_ref: Dict[str, object],
+    cleanup: Callable[[], None],
+) -> Iterator[bytes]:
+    return _stream_capture_frames(
+        capture_source=camera_source,
+        cfg=cfg,
+        ensure_detector=ensure_detector,
+        load_assets=load_assets,
+        detect_and_crop=detect_and_crop,
+        preprocess_batch=preprocess_batch,
+        predict_models_batch=predict_models_batch,
+        attach_quality_from_previous=attach_quality_from_previous,
+        annotate_cv2=annotate_cv2,
+        models_ref=models_ref,
+        cleanup=cleanup,
+    )
 
 

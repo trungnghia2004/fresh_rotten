@@ -15,6 +15,17 @@
         <div class="mode-switch">
           <label><input type="radio" name="uploadMode" value="image" checked /> Ảnh</label>
           <label><input type="radio" name="uploadMode" value="video" /> Video</label>
+          <label><input type="radio" name="uploadMode" value="camera" /> Camera</label>
+        </div>
+
+        <div id="cameraControls" class="camera-controls hidden">
+          <label for="cameraSource">Nguồn camera:</label>
+          <select id="cameraSource">
+            <option value="browser">Camera điện thoại trực tiếp (trình duyệt)</option>
+            <option value="0">Camera laptop (VideoCapture 0)</option>
+            <option value="1">Điện thoại webcam (VideoCapture 1)</option>
+            <option value="2">Điện thoại webcam (VideoCapture 2)</option>
+          </select>
         </div>
 
         <input id="fileInput" type="file" accept="image/*" />
@@ -55,7 +66,7 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=1"></script>
+    <script src="/static/app.js?v=3"></script>
   </body>
 </html>
 
