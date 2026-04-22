@@ -62,15 +62,15 @@ STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "1
 ANNOTATION_FONT_SIZE = max(10, int(os.getenv("ANNOTATION_FONT_SIZE", "18")))
 ANNOTATION_MAX_WIDTH = max(0, int(os.getenv("ANNOTATION_MAX_WIDTH", "960")))
 CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "30"))
-CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "3")))
+CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "5")))
 CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "10")))
 CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "80"))
-CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "960")))
+CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "640")))
 CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "720")))
 CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "6")))
 CAMERA_STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_MAX_BOXES", "10")))
-CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "1280")))
-CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "720")))
+CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "640")))
+CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "480")))
 CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "30"))
 CAMERA_CAPTURE_BUFFER_SIZE = max(0, int(os.getenv("CAMERA_CAPTURE_BUFFER_SIZE", "1")))
 CAMERA_ASYNC_INFERENCE = os.getenv("CAMERA_ASYNC_INFERENCE", "1") == "1"
@@ -680,7 +680,6 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
     debug_list = []
     filtered_small = 0
     filtered_label = 0
-    filtered_overlap = 0
     if len(res.boxes):
         sorted_idx = np.argsort(res.boxes.conf.cpu().numpy())[::-1]
         W, H = img.size
@@ -731,7 +730,6 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
                 }
             )
 
-    outputs, filtered_overlap = deduplicate_detections(outputs, iou_thresh=0.45, overlap_min_thresh=0.75)
     max_conf = float(res.boxes.conf.max().item()) if len(res.boxes.conf) else 0.0
     dbg = [
         {
@@ -743,7 +741,6 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
             "boxes_kept": len(outputs),
             "filtered_small": filtered_small,
             "filtered_label": filtered_label,
-            "filtered_overlap": filtered_overlap,
             "tops": debug_list,
         }
     ]
