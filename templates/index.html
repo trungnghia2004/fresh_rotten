@@ -4,65 +4,61 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fresh&Rotten</title>
-    <link rel="stylesheet" href="/static/style.css?v=2" />
+    <link rel="stylesheet" href="/static/style.css?v=3" />
   </head>
   <body>
     <main class="wrap">
-      <section class="card">
-        <h1>Fresh&Rotten</h1>
-        <p>Tải ảnh hoặc video một lần, hệ thống hiển thị kết quả để so sánh.</p>
+      <section class="app-layout">
+        <aside class="card control-panel">
+          <h1>Fresh&Rotten</h1>
+          <p>Tải ảnh hoặc video một lần, hệ thống hiển thị kết quả để so sánh.</p>
 
-        <div class="mode-switch">
-          <label><input type="radio" name="uploadMode" value="image" checked /> Ảnh</label>
-          <label><input type="radio" name="uploadMode" value="video" /> Video</label>
-          <label><input type="radio" name="uploadMode" value="camera" /> Camera</label>
-        </div>
-
-        <div id="cameraControls" class="camera-controls hidden">
-          <span>Nguồn camera:</span>
-          <label><input type="radio" name="cameraType" value="laptop" checked /> Máy tính</label>
-          <label><input type="radio" name="cameraType" value="phone" /> Điện thoại</label>
-        </div>
-
-        <input id="fileInput" type="file" accept="image/*" />
-        <button id="predictBtn">Dự đoán</button>
-
-        <div id="inputHint" class="hint">Đang ở chế độ ảnh.</div>
-        <div id="globalResult" class="result empty">Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.</div>
-      </section>
-
-      <section class="grid">
-        <article class="card" id="inputCard">
-          <h2>Input</h2>
-          <div class="preview-wrap">
-            <img id="inputImage" class="preview hidden" alt="Input image" />
-            <video id="inputVideo" class="preview hidden" controls></video>
+          <div class="mode-switch">
+            <label><input type="radio" name="uploadMode" value="image" checked /> Ảnh</label>
+            <label><input type="radio" name="uploadMode" value="video" /> Video</label>
+            <label><input type="radio" name="uploadMode" value="camera" /> Camera</label>
           </div>
-        </article>
 
-        <article class="card">
-          <h2>Output</h2>
-          <p>Ảnh/video kèm box và nhãn.</p>
+          <input id="fileInput" type="file" accept="image/*" />
+          <button id="predictBtn">Dự đoán</button>
 
-          <div id="modelSwitch" class="mode-switch">
-            <label><input type="radio" name="modelPick" value="cnn" checked /> CNN</label>
+          <div id="inputHint" class="hint">Đang ở chế độ ảnh.</div>
+          <div id="globalResult" class="result empty">Chưa có kết quả. Hãy chọn tệp và bấm Dự đoán.</div>
+
+          <div id="modelSwitch" class="mode-switch model-switch">
+            <label><input type="radio" name="modelPick" value="cnn" /> CNN</label>
             <label><input type="radio" name="modelPick" value="mobilenet" /> MobileNet</label>
-          </div>
-
-          <div class="preview-wrap">
-            <img id="outputImage" class="preview hidden" alt="Output image" />
-            <video id="outputVideo" class="preview hidden" controls playsinline type="video/mp4"></video>
-            <img id="outputStream" class="preview hidden" alt="Streaming output" />
           </div>
 
           <div class="model-result" id="outResult">
             <div>Số lượng: <strong id="outCounts">tươi 0 / hỏng 0 (crops 0)</strong></div>
           </div>
-        </article>
+        </aside>
+
+        <section class="grid media-panel">
+          <article class="card" id="inputCard">
+            <h2>Input</h2>
+            <div class="preview-wrap">
+              <img id="inputImage" class="preview hidden" alt="Input image" />
+              <video id="inputVideo" class="preview hidden" controls></video>
+            </div>
+          </article>
+
+          <article class="card">
+            <h2>Output</h2>
+            <p>Ảnh/video kèm box và nhãn.</p>
+
+            <div class="preview-wrap">
+              <img id="outputImage" class="preview hidden" alt="Output image" />
+              <video id="outputVideo" class="preview hidden" controls playsinline type="video/mp4"></video>
+              <img id="outputStream" class="preview hidden" alt="Streaming output" />
+            </div>
+          </article>
+        </section>
       </section>
     </main>
 
-    <script src="/static/app.js?v=4"></script>
+    <script src="/static/app.js?v=5"></script>
   </body>
 </html>
 

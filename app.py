@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
@@ -40,10 +40,10 @@ CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", BASE_DIR / "class_names.js
 ALLOWED_QUALITIES = {"fresh", "rotten"}
 DETECT_MODEL = Path(r"F:\group23_22001611_22001624\weights\yolo_fruits_and_vegetables_v3.pt")
 
-DETECT_CONF = float(os.getenv("DETECT_CONF", "0.6"))
-DETECT_IOU = float(os.getenv("DETECT_IOU", "0.35"))
+DETECT_CONF = float(os.getenv("DETECT_CONF", "0.7"))
+DETECT_IOU = float(os.getenv("DETECT_IOU", "0.1"))
 DETECT_MAX_DET = max(1, int(os.getenv("DETECT_MAX_DET", "100")))
-DETECT_MIN_AREA_RATIO = float(os.getenv("DETECT_MIN_AREA_RATIO", "0.002"))
+DETECT_MIN_AREA_RATIO = float(os.getenv("DETECT_MIN_AREA_RATIO", "0.005"))
 DETECT_ALLOWED_LABELS = {
     x.strip().lower() for x in os.getenv("DETECT_ALLOWED_LABELS", "").split(",") if x.strip()
 }
@@ -52,25 +52,28 @@ VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "1")))
 VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "3")))
 STREAM_DETECT_EVERY = max(1, int(os.getenv("STREAM_DETECT_EVERY", "4")))
 STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("STREAM_CLASSIFY_EVERY", "3")))
-STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "55"))
+STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "65"))
 STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "512")))
-STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "24"))
+STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "30"))
 STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "720")))
 STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.4"))
-STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "5")))
-STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "2")))
-CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "12"))
-CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "8")))
-CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "12")))
-CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "45"))
+STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "10")))
+STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "10")))
+ANNOTATION_FONT_SIZE = max(10, int(os.getenv("ANNOTATION_FONT_SIZE", "18")))
+ANNOTATION_MAX_WIDTH = max(0, int(os.getenv("ANNOTATION_MAX_WIDTH", "960")))
+CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "30"))
+CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "5")))
+CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "10")))
+CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "80"))
 CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "320")))
-CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "640")))
-CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "3")))
-CAMERA_STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_MAX_BOXES", "1")))
+CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "720")))
+CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "6")))
+CAMERA_STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_MAX_BOXES", "10")))
 CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "640")))
 CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "480")))
-CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "15"))
+CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "30"))
 CAMERA_CAPTURE_BUFFER_SIZE = max(0, int(os.getenv("CAMERA_CAPTURE_BUFFER_SIZE", "1")))
+CAMERA_ASYNC_INFERENCE = os.getenv("CAMERA_ASYNC_INFERENCE", "1") == "1"
 
 MODEL_PATHS = {
     "cnn": BASE_DIR / "weights/cnn_best.keras",
@@ -89,7 +92,7 @@ _detector: YOLO | None = None
 _stream_jobs: Dict[str, str] = {}
 _camera_jobs: Dict[str, int] = {}
 try:
-    _font = ImageFont.truetype("arial.ttf", 24)
+    _font = ImageFont.truetype("arial.ttf", ANNOTATION_FONT_SIZE)
 except Exception:
     _font = ImageFont.load_default()
 _custom_objects = {}
@@ -245,11 +248,12 @@ def preprocess_batch(crops: List[Image.Image]) -> np.ndarray:
         arrs.append(np.asarray(im, dtype=np.float32) / 255.0)
     return np.stack(arrs, axis=0)
 
-def render_annotated(image: Image.Image, detections: List[dict]) -> str:
+def render_annotated(image: Image.Image, detections: List[dict], model_name: str = "mobilenet") -> str:
     """Vẽ box + nhãn fruit_quality lên ảnh, trả về data URL base64."""
     if not detections:
         return ""
-    img = annotate_pil(image, detections)
+    img, draw_detections = resize_pil_for_annotation(image, detections, ANNOTATION_MAX_WIDTH)
+    img = annotate_pil(img, draw_detections, model_name=model_name)
     import base64
     import io
 
@@ -259,7 +263,39 @@ def render_annotated(image: Image.Image, detections: List[dict]) -> str:
     return f"data:image/png;base64,{b64}"
 
 
-def annotate_pil(image: Image.Image, detections: List[dict]) -> Image.Image:
+def scale_detections(detections: List[dict], sx: float, sy: float) -> List[dict]:
+    if sx == 1.0 and sy == 1.0:
+        return detections
+
+    scaled = []
+    for det in detections:
+        copied = dict(det)
+        copied_detection = dict(copied.get("detection", {}))
+        box = copied_detection.get("box")
+        if box:
+            x1, y1, x2, y2 = box
+            copied_detection["box"] = [
+                int(round(x1 * sx)),
+                int(round(y1 * sy)),
+                int(round(x2 * sx)),
+                int(round(y2 * sy)),
+            ]
+        copied["detection"] = copied_detection
+        scaled.append(copied)
+    return scaled
+
+
+def resize_pil_for_annotation(image: Image.Image, detections: List[dict], max_width: int):
+    if max_width <= 0 or image.width == max_width:
+        return image.convert("RGB").copy(), detections
+
+    scale = max_width / float(image.width)
+    out_h = max(2, int(round(image.height * scale)))
+    resized = image.convert("RGB").resize((max_width, out_h), Image.Resampling.LANCZOS)
+    return resized, scale_detections(detections, scale, scale)
+
+
+def annotate_pil(image: Image.Image, detections: List[dict], model_name: str = "mobilenet") -> Image.Image:
     """Vẽ box + nhãn fruit_quality lên ảnh, trả về ảnh PIL."""
     img = image.convert("RGB").copy()
     if not detections:
@@ -270,22 +306,24 @@ def annotate_pil(image: Image.Image, detections: List[dict]) -> Image.Image:
         fruit = det["detection"]["label"]
         quality = None
         if det.get("models"):
-            if "mobilenet" in det["models"]:
-                quality = det["models"]["mobilenet"].get("quality")
+            if model_name in det["models"]:
+                quality = det["models"][model_name].get("quality")
             if quality is None and det["models"]:
                 first_model = next(iter(det["models"].values()))
                 quality = first_model.get("quality")
         label = f"{fruit}_{quality}" if quality else fruit
         x1, y1, x2, y2 = box
-        draw.rectangle([x1, y1, x2, y2], outline=(0, 200, 0), width=4)
+        line_width = 2
+        draw.rectangle([x1, y1, x2, y2], outline=(0, 200, 0), width=line_width)
         text = label
         try:
             bbox = draw.textbbox((0, 0), text, font=_font)
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         except Exception:
             tw, th = _font.getsize(text)
-        draw.rectangle([x1, y1 - th - 8, x1 + tw + 10, y1], fill=(0, 0, 0, 180))
-        draw.text((x1 + 5, y1 - th - 4), text, fill=(255, 255, 255), font=_font)
+        label_y = max(0, y1 - th - 6)
+        draw.rectangle([x1, label_y, x1 + tw + 8, label_y + th + 6], fill=(0, 0, 0))
+        draw.text((x1 + 4, label_y + 2), text, fill=(255, 255, 255), font=_font)
     return img
 
 def annotate_cv2(frame_bgr: np.ndarray, detections: List[dict]) -> np.ndarray:
@@ -307,11 +345,13 @@ def annotate_cv2(frame_bgr: np.ndarray, detections: List[dict]) -> np.ndarray:
                 quality = first_model.get("quality")
         label = f"{fruit}_{quality}" if quality else fruit
 
+        font_scale = 0.5
+        thickness = 1
         cv2.rectangle(out, (x1, y1), (x2, y2), (0, 220, 0), 2)
-        (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-        ty = max(0, y1 - th - 8)
-        cv2.rectangle(out, (x1, ty), (x1 + tw + 8, ty + th + baseline + 6), (0, 0, 0), -1)
-        cv2.putText(out, label, (x1 + 4, ty + th + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        ty = max(0, y1 - th - 6)
+        cv2.rectangle(out, (x1, ty), (x1 + tw + 8, ty + th + baseline + 5), (0, 0, 0), -1)
+        cv2.putText(out, label, (x1 + 4, ty + th + 1), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
     return out
 
@@ -550,7 +590,7 @@ def predict_models_batch(arr_batch: np.ndarray, model_names: List[str] | None = 
     return out
 
 
-def detect_and_crop(img: Image.Image, imgsz: int = 640):
+def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = None):
     """
     Run YOLO with explicit conf/iou filters and return boxes sorted by confidence (desc).
     """
@@ -561,7 +601,7 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640):
     res = _detector(
         img_rgb,
         imgsz=imgsz,
-        conf=DETECT_CONF,
+        conf=DETECT_CONF if conf is None else conf,
         iou=DETECT_IOU,
         max_det=DETECT_MAX_DET,
         agnostic_nms=True,
@@ -647,7 +687,7 @@ def index():
         return f.read()
 
 @app.post("/predict_image")
-async def predict_image(file: UploadFile = File(...)):
+async def predict_image(file: UploadFile = File(...), selected_model: str | None = Form(None)):
     if not file.content_type or not file.content_type.startswith("image/"):
         return JSONResponse({"error": "Please upload an image."}, status_code=400)
 
@@ -670,11 +710,16 @@ async def predict_image(file: UploadFile = File(...)):
         detections = []
         fruit_counts = {}
         crop_count = len(filtered)
-        total_qc = {"fresh": 0, "rotten": 0}
+        total_qc_by_model = {name: {"fresh": 0, "rotten": 0} for name in MODEL_PATHS.keys()}
+
+        selected = (selected_model or "").strip().lower() if selected_model else ""
+        if selected and selected not in _models:
+            return JSONResponse({"error": "selected_model must be 'cnn' or 'mobilenet'."}, status_code=400)
 
         crops = [d["crop"] for d in filtered]
         arr_batch = preprocess_batch(crops)
-        models_batch = predict_models_batch(arr_batch)
+        model_names = [selected] if selected else None
+        models_batch = predict_models_batch(arr_batch, model_names=model_names)
 
         for det, models in zip(filtered, models_batch):
             fruit = det["det_label"]
@@ -682,10 +727,12 @@ async def predict_image(file: UploadFile = File(...)):
                 m["fruit"] = fruit
                 m["label"] = f"{fruit}_{m['quality']}"
                 m["crop_count"] = crop_count
+            for model_name, model_result in models.items():
+                quality = model_result.get("quality")
+                if model_name in total_qc_by_model and quality in total_qc_by_model[model_name]:
+                    total_qc_by_model[model_name][quality] += 1
             agg_model = models.get("mobilenet") or next(iter(models.values()))
             quality = agg_model["quality"]
-            if quality in total_qc:
-                total_qc[quality] += 1
             fc = fruit_counts.setdefault(fruit, {"total": 0, "fresh": 0, "rotten": 0})
             fc["total"] += 1
             if quality in fc:
@@ -704,11 +751,15 @@ async def predict_image(file: UploadFile = File(...)):
         main_detection = max(detections, key=lambda d: d["detection"]["confidence"], default=None)
         # gán tổng số fresh/rotten và crop_count vào models của main_detection để UI hiển thị
         if main_detection and "models" in main_detection:
-            for m in main_detection["models"].values():
-                m["quality_counts"] = total_qc
+            for name, m in main_detection["models"].items():
+                m["quality_counts"] = total_qc_by_model.get(name, {"fresh": 0, "rotten": 0})
                 m["crop_count"] = crop_count
 
-        annotated_image = render_annotated(img, detections)
+        annotated_images = {
+            name: render_annotated(img, detections, model_name=name)
+            for name in MODEL_PATHS.keys()
+        }
+        annotated_image = annotated_images.get("mobilenet") or next(iter(annotated_images.values()), "")
 
         return {
             "mode": "image",
@@ -717,6 +768,7 @@ async def predict_image(file: UploadFile = File(...)):
             "sampled_frames": 1,
             "main_detection": main_detection,
             "annotated_image": annotated_image,
+            "annotated_images": annotated_images,
             "debug": dbg,
         }
     except Exception as exc:
@@ -1002,6 +1054,7 @@ def stream_camera(job_id: str):
         capture_height=CAMERA_CAPTURE_HEIGHT,
         capture_fps=CAMERA_CAPTURE_FPS,
         capture_buffer_size=CAMERA_CAPTURE_BUFFER_SIZE,
+        async_inference=CAMERA_ASYNC_INFERENCE,
     )
 
     def _cleanup():
