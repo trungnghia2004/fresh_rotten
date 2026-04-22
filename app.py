@@ -50,15 +50,27 @@ DETECT_ALLOWED_LABELS = {
 USE_TF_GPU = os.getenv("USE_TF_GPU", "0") == "1"
 VIDEO_FRAME_STEP = max(1, int(os.getenv("VIDEO_FRAME_STEP", "1")))
 VIDEO_MAX_BOXES = max(1, int(os.getenv("VIDEO_MAX_BOXES", "3")))
-STREAM_DETECT_EVERY = max(1, int(os.getenv("STREAM_DETECT_EVERY", "3")))
-STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("STREAM_CLASSIFY_EVERY", "2")))
-STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "85"))
-STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "640")))
-STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "30"))
-STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "1280")))
-STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.35"))
-STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "10")))
-STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "4")))
+STREAM_DETECT_EVERY = max(1, int(os.getenv("STREAM_DETECT_EVERY", "4")))
+STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("STREAM_CLASSIFY_EVERY", "3")))
+STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "55"))
+STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "512")))
+STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "24"))
+STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "720")))
+STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.4"))
+STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "5")))
+STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "2")))
+CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "12"))
+CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "8")))
+CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "12")))
+CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "45"))
+CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "320")))
+CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "640")))
+CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "3")))
+CAMERA_STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_MAX_BOXES", "1")))
+CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "640")))
+CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "480")))
+CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "15"))
+CAMERA_CAPTURE_BUFFER_SIZE = max(0, int(os.getenv("CAMERA_CAPTURE_BUFFER_SIZE", "1")))
 
 MODEL_PATHS = {
     "cnn": BASE_DIR / "weights/cnn_best.keras",
@@ -977,15 +989,19 @@ def stream_camera(job_id: str):
 
     cfg = StreamConfig(
         video_frame_step=VIDEO_FRAME_STEP,
-        stream_target_fps=STREAM_TARGET_FPS,
-        stream_jpeg_quality=STREAM_JPEG_QUALITY,
-        stream_detect_every=STREAM_DETECT_EVERY,
-        stream_yolo_imgsz=STREAM_YOLO_IMGSZ,
+        stream_target_fps=CAMERA_STREAM_TARGET_FPS,
+        stream_jpeg_quality=CAMERA_STREAM_JPEG_QUALITY,
+        stream_detect_every=CAMERA_STREAM_DETECT_EVERY,
+        stream_yolo_imgsz=CAMERA_STREAM_YOLO_IMGSZ,
         stream_min_conf=STREAM_MIN_CONF,
-        stream_max_boxes=STREAM_MAX_BOXES,
-        stream_classify_every=STREAM_CLASSIFY_EVERY,
-        stream_classify_max_boxes=STREAM_CLASSIFY_MAX_BOXES,
-        stream_output_max_width=STREAM_OUTPUT_MAX_WIDTH,
+        stream_max_boxes=CAMERA_STREAM_MAX_BOXES,
+        stream_classify_every=CAMERA_STREAM_CLASSIFY_EVERY,
+        stream_classify_max_boxes=CAMERA_STREAM_CLASSIFY_MAX_BOXES,
+        stream_output_max_width=CAMERA_STREAM_OUTPUT_MAX_WIDTH,
+        capture_width=CAMERA_CAPTURE_WIDTH,
+        capture_height=CAMERA_CAPTURE_HEIGHT,
+        capture_fps=CAMERA_CAPTURE_FPS,
+        capture_buffer_size=CAMERA_CAPTURE_BUFFER_SIZE,
     )
 
     def _cleanup():

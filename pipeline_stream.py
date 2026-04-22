@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+import math
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterator, List, Union
@@ -21,6 +22,10 @@ class StreamConfig:
     stream_classify_every: int
     stream_classify_max_boxes: int
     stream_output_max_width: int
+    capture_width: int = 0
+    capture_height: int = 0
+    capture_fps: float = 0.0
+    capture_buffer_size: int = 0
 
 
 
@@ -78,7 +83,7 @@ def stabilize_labels_with_previous(filtered: List[dict], previous: List[dict]) -
 
     return out
 
-def _open_capture(capture_source: Union[str, int]):
+def _open_capture(capture_source: Union[str, int], cfg: StreamConfig):
     import cv2
 
     if isinstance(capture_source, int):
@@ -86,6 +91,19 @@ def _open_capture(capture_source: Union[str, int]):
         if not cap.isOpened():
             cap.release()
             cap = cv2.VideoCapture(capture_source)
+        if cap.isOpened():
+            if cfg.capture_buffer_size > 0:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, cfg.capture_buffer_size)
+            try:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            except Exception:
+                pass
+            if cfg.capture_width > 0:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.capture_width)
+            if cfg.capture_height > 0:
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.capture_height)
+            if cfg.capture_fps > 0:
+                cap.set(cv2.CAP_PROP_FPS, cfg.capture_fps)
     else:
         cap = cv2.VideoCapture(capture_source)
     return cap
@@ -109,17 +127,17 @@ def _stream_capture_frames(
 
     cap = None
     try:
-        cap = _open_capture(capture_source)
+        cap = _open_capture(capture_source, cfg)
         if not cap.isOpened():
             return
 
         source_fps = cap.get(cv2.CAP_PROP_FPS)
         if not source_fps or source_fps <= 0:
-            source_fps = 25.0
+            source_fps = cfg.capture_fps if cfg.capture_fps > 0 else 25.0
 
         dynamic_step = max(1, cfg.video_frame_step)
         if cfg.stream_target_fps > 0 and source_fps > cfg.stream_target_fps:
-            dynamic_step = max(dynamic_step, int(round(source_fps / cfg.stream_target_fps)))
+            dynamic_step = max(dynamic_step, int(math.ceil(source_fps / cfg.stream_target_fps)))
 
         output_fps = max(1.0, source_fps / float(dynamic_step))
         frame_interval = 1.0 / output_fps
