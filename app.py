@@ -40,8 +40,8 @@ CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", BASE_DIR / "class_names.js
 ALLOWED_QUALITIES = {"fresh", "rotten"}
 DETECT_MODEL = Path(r"F:\group23_22001611_22001624\weights\yolo_fruits_and_vegetables_v3.pt")
 
-DETECT_CONF = float(os.getenv("DETECT_CONF", "0.7"))
-DETECT_IOU = float(os.getenv("DETECT_IOU", "0.1"))
+DETECT_CONF = float(os.getenv("DETECT_CONF", "0.70"))
+DETECT_IOU = float(os.getenv("DETECT_IOU", "0.2"))
 DETECT_MAX_DET = max(1, int(os.getenv("DETECT_MAX_DET", "100")))
 DETECT_MIN_AREA_RATIO = float(os.getenv("DETECT_MIN_AREA_RATIO", "0.005"))
 DETECT_ALLOWED_LABELS = {
@@ -56,24 +56,27 @@ STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "65"))
 STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "512")))
 STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "30"))
 STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "720")))
-STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", "0.4"))
+# Đồng bộ ngưỡng detect cho toàn bộ ảnh/video/camera.
+# Có thể override riêng bằng STREAM_MIN_CONF nếu cần, nhưng mặc định theo DETECT_CONF.
+STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", str(DETECT_CONF)))
 STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "10")))
 STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "10")))
 ANNOTATION_FONT_SIZE = max(10, int(os.getenv("ANNOTATION_FONT_SIZE", "18")))
 ANNOTATION_MAX_WIDTH = max(0, int(os.getenv("ANNOTATION_MAX_WIDTH", "960")))
 CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "30"))
-CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "5")))
-CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "10")))
-CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "80"))
+CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "1")))
+CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "1")))
+CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "88"))
 CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "640")))
-CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "720")))
-CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "6")))
+CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "960")))
+CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "10")))
 CAMERA_STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_MAX_BOXES", "10")))
-CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "640")))
-CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "480")))
+CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "1280")))
+CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "720")))
 CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "30"))
 CAMERA_CAPTURE_BUFFER_SIZE = max(0, int(os.getenv("CAMERA_CAPTURE_BUFFER_SIZE", "1")))
 CAMERA_ASYNC_INFERENCE = os.getenv("CAMERA_ASYNC_INFERENCE", "1") == "1"
+CAMERA_LITE_MAX_BOXES = max(1, int(os.getenv("CAMERA_LITE_MAX_BOXES", "3")))
 
 MODEL_PATHS = {
     "cnn": BASE_DIR / "weights/cnn_best.keras",
@@ -233,6 +236,87 @@ def ensure_detector() -> bool:
         return False
 
 
+def _open_cv_camera(source: int):
+    import cv2
+
+    cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(source)
+    if cap.isOpened():
+        if CAMERA_CAPTURE_WIDTH > 0:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERA_CAPTURE_WIDTH))
+        if CAMERA_CAPTURE_HEIGHT > 0:
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERA_CAPTURE_HEIGHT))
+        if CAMERA_CAPTURE_FPS > 0:
+            cap.set(cv2.CAP_PROP_FPS, float(CAMERA_CAPTURE_FPS))
+        if CAMERA_CAPTURE_BUFFER_SIZE > 0:
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, float(CAMERA_CAPTURE_BUFFER_SIZE))
+            except Exception:
+                pass
+    return cap
+
+
+def _probe_camera_source(source: int, samples: int = 8):
+    import cv2
+
+    cap = _open_cv_camera(source)
+    if not cap.isOpened():
+        try:
+            cap.release()
+        except Exception:
+            pass
+        return None
+
+    score_sum = 0.0
+    ok_frames = 0
+    try:
+        for _ in range(max(1, samples)):
+            ret, frame = cap.read()
+            if not ret or frame is None or frame.size == 0:
+                continue
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # Chấm điểm dựa trên độ tương phản + độ sắc cạnh.
+            std_gray = float(np.std(gray))
+            lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            score = std_gray + min(lap_var, 400.0) * 0.1
+            score_sum += score
+            ok_frames += 1
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
+
+    if ok_frames == 0:
+        return None
+    return {
+        "source": int(source),
+        "score": score_sum / float(ok_frames),
+        "ok_frames": ok_frames,
+    }
+
+
+def _pick_best_camera_source(candidates: List[int] | None = None):
+    if not candidates:
+        candidates = [0, 1, 2]
+
+    best = None
+    for src in candidates:
+        info = _probe_camera_source(int(src))
+        if info is None:
+            continue
+        if best is None or float(info["score"]) > float(best["score"]):
+            best = info
+
+    if best is None:
+        return None, {"candidates": candidates, "probes": []}
+
+    return int(best["source"]), best
+
+
 def preprocess_image(img: Image.Image) -> np.ndarray:
     img = img.convert("RGB").resize(IMAGE_SIZE)
     arr = np.asarray(img, dtype=np.float32) / 255.0
@@ -248,19 +332,35 @@ def preprocess_batch(crops: List[Image.Image]) -> np.ndarray:
         arrs.append(np.asarray(im, dtype=np.float32) / 255.0)
     return np.stack(arrs, axis=0)
 
-def render_annotated(image: Image.Image, detections: List[dict], model_name: str = "mobilenet") -> str:
+
+def pil_to_data_url(img: Image.Image, fmt: str = "PNG", quality: int = 85) -> str:
+    import base64
+    import io
+
+    buf = io.BytesIO()
+    save_kwargs = {}
+    fmt_u = (fmt or "PNG").upper()
+    if fmt_u == "JPEG":
+        save_kwargs["quality"] = int(max(40, min(95, quality)))
+        save_kwargs["optimize"] = True
+    img.convert("RGB").save(buf, format=fmt_u, **save_kwargs)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    mime = "image/jpeg" if fmt_u == "JPEG" else "image/png"
+    return f"data:{mime};base64,{b64}"
+
+def render_annotated(
+    image: Image.Image,
+    detections: List[dict],
+    model_name: str = "mobilenet",
+    fmt: str = "PNG",
+    quality: int = 85,
+) -> str:
     """Vẽ box + nhãn fruit_quality lên ảnh, trả về data URL base64."""
     if not detections:
         return ""
     img, draw_detections = resize_pil_for_annotation(image, detections, ANNOTATION_MAX_WIDTH)
     img = annotate_pil(img, draw_detections, model_name=model_name)
-    import base64
-    import io
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+    return pil_to_data_url(img, fmt=fmt, quality=quality)
 
 
 def scale_detections(detections: List[dict], sx: float, sy: float) -> List[dict]:
@@ -657,7 +757,12 @@ def predict_models_batch(arr_batch: np.ndarray, model_names: List[str] | None = 
     return out
 
 
-def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = None):
+def detect_and_crop(
+    img: Image.Image,
+    imgsz: int = 640,
+    conf: float | None = None,
+    collect_debug: bool = True,
+):
     """
     Run YOLO with explicit conf/iou filters and return boxes sorted by confidence (desc).
     """
@@ -677,7 +782,7 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
     names = _detector.model.names  # type: ignore
 
     outputs = []
-    debug_list = []
+    debug_list: List[dict] = []
     filtered_small = 0
     filtered_label = 0
     if len(res.boxes):
@@ -720,30 +825,33 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
                     "crop": crop,
                 }
             )
-            debug_list.append(
-                {
-                    "label": cls_name,
-                    "conf": conf,
-                    "area_ratio": round(box_area_ratio, 6),
-                    "box": [int(x1), int(y1), int(x2), int(y2)],
-                    "expanded_box": [int(x1e), int(y1e), int(x2e), int(y2e)],
-                }
-            )
+            if collect_debug:
+                debug_list.append(
+                    {
+                        "label": cls_name,
+                        "conf": conf,
+                        "area_ratio": round(box_area_ratio, 6),
+                        "box": [int(x1), int(y1), int(x2), int(y2)],
+                        "expanded_box": [int(x1e), int(y1e), int(x2e), int(y2e)],
+                    }
+                )
 
     max_conf = float(res.boxes.conf.max().item()) if len(res.boxes.conf) else 0.0
-    dbg = [
-        {
-            "imgsz": imgsz,
-            "conf": DETECT_CONF,
-            "iou": DETECT_IOU,
-            "max_conf": max_conf,
-            "boxes_raw": len(res.boxes),
-            "boxes_kept": len(outputs),
-            "filtered_small": filtered_small,
-            "filtered_label": filtered_label,
-            "tops": debug_list,
-        }
-    ]
+    dbg = []
+    if collect_debug:
+        dbg = [
+            {
+                "imgsz": imgsz,
+                "conf": DETECT_CONF if conf is None else conf,
+                "iou": DETECT_IOU,
+                "max_conf": max_conf,
+                "boxes_raw": len(res.boxes),
+                "boxes_kept": len(outputs),
+                "filtered_small": filtered_small,
+                "filtered_label": filtered_label,
+                "tops": debug_list,
+            }
+        ]
     return outputs, max_conf, {"attempts": dbg}
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -754,34 +862,62 @@ def index():
         return f.read()
 
 @app.post("/predict_image")
-async def predict_image(file: UploadFile = File(...), selected_model: str | None = Form(None)):
+async def predict_image(
+    file: UploadFile = File(...),
+    selected_model: str | None = Form(None),
+    allow_no_detection: str | None = Form(None),
+    imgsz: int | None = Form(None),
+    lite: str | None = Form(None),
+):
     if not file.content_type or not file.content_type.startswith("image/"):
         return JSONResponse({"error": "Please upload an image."}, status_code=400)
 
     try:
         load_assets()
+        selected = (selected_model or "").strip().lower() if selected_model else ""
+        if selected and selected not in _models:
+            return JSONResponse({"error": "selected_model must be 'cnn' or 'mobilenet'."}, status_code=400)
+
+        lite_mode = (lite or "").strip() == "1"
+        render_model_names = [selected] if selected else list(_models.keys())
+        req_imgsz = 640
+        if imgsz is not None:
+            req_imgsz = max(320, min(960, int(imgsz)))
+
         data = await file.read()
         img = Image.open(io.BytesIO(data))
         if _detector is None:
             return JSONResponse({"error": "YOLO detector not loaded. Ensure ultralytics installed and model path exists."}, status_code=500)
 
-        det_list, max_conf, dbg = detect_and_crop(img)
+        det_list, max_conf, dbg = detect_and_crop(img, imgsz=req_imgsz, collect_debug=not lite_mode)
         if not det_list:
+            if (allow_no_detection or "").strip() == "1":
+                raw_img = pil_to_data_url(img)
+                payload = {
+                    "mode": "image",
+                    "detections": [],
+                    "fruit_counts": {},
+                    "sampled_frames": 1,
+                    "main_detection": None,
+                    "annotated_image": raw_img,
+                    "notice": f"No fruits detected by YOLO. max_conf={max_conf:.3f}",
+                }
+                if not lite_mode:
+                    payload["annotated_images"] = {name: raw_img for name in render_model_names}
+                    payload["debug"] = dbg
+                return payload
             return JSONResponse({"error": f"No fruits detected by YOLO. max_conf={max_conf:.3f}", "debug": dbg}, status_code=400)
 
-        # Giữ mọi box có conf >= 0.7
-        filtered = [d for d in det_list if d["det_confidence"] >= 0.76]
+        filtered = [d for d in det_list if d["det_confidence"] >= DETECT_CONF]
         if not filtered:
             filtered = det_list
+        if lite_mode:
+            filtered = filtered[:CAMERA_LITE_MAX_BOXES]
 
         detections = []
         fruit_counts = {}
         crop_count = len(filtered)
-        total_qc_by_model = {name: {"fresh": 0, "rotten": 0} for name in MODEL_PATHS.keys()}
-
-        selected = (selected_model or "").strip().lower() if selected_model else ""
-        if selected and selected not in _models:
-            return JSONResponse({"error": "selected_model must be 'cnn' or 'mobilenet'."}, status_code=400)
+        total_qc_by_model = {name: {"fresh": 0, "rotten": 0} for name in render_model_names}
 
         crops = [d["crop"] for d in filtered]
         arr_batch = preprocess_batch(crops)
@@ -822,13 +958,25 @@ async def predict_image(file: UploadFile = File(...), selected_model: str | None
                 m["quality_counts"] = total_qc_by_model.get(name, {"fresh": 0, "rotten": 0})
                 m["crop_count"] = crop_count
 
+        render_fmt = "JPEG" if lite_mode else "PNG"
+        render_quality = 80 if lite_mode else 90
         annotated_images = {
-            name: render_annotated(img, detections, model_name=name)
-            for name in MODEL_PATHS.keys()
+            name: render_annotated(img, detections, model_name=name, fmt=render_fmt, quality=render_quality)
+            for name in render_model_names
         }
-        annotated_image = annotated_images.get("mobilenet") or next(iter(annotated_images.values()), "")
+        if selected:
+            annotated_image = annotated_images.get(selected, "")
+        else:
+            annotated_image = annotated_images.get("mobilenet") or next(iter(annotated_images.values()), "")
 
-        return {
+        if lite_mode:
+            return {
+                "mode": "image",
+                "main_detection": main_detection,
+                "annotated_image": annotated_image,
+            }
+
+        payload = {
             "mode": "image",
             "detections": detections,
             "fruit_counts": fruit_counts,
@@ -836,8 +984,9 @@ async def predict_image(file: UploadFile = File(...), selected_model: str | None
             "main_detection": main_detection,
             "annotated_image": annotated_image,
             "annotated_images": annotated_images,
-            "debug": dbg,
         }
+        payload["debug"] = dbg
+        return payload
     except Exception as exc:
         return JSONResponse({"error": f"Image prediction failed: {exc}"}, status_code=500)
 
@@ -914,7 +1063,7 @@ async def predict_video(file: UploadFile = File(...)):
 
             frame_detections = []
             if det_list:
-                filtered = [d for d in det_list if d["det_confidence"] >= 0.7] or det_list
+                filtered = [d for d in det_list if d["det_confidence"] >= DETECT_CONF] or det_list
                 filtered = filtered[:VIDEO_MAX_BOXES]
                 crop_count = len(filtered)
                 crops = [d["crop"] for d in filtered]
@@ -1039,12 +1188,110 @@ async def start_video_stream(file: UploadFile = File(...)):
 
 @app.post("/start_camera_stream")
 async def start_camera_stream(source: int = 0):
-    if source not in (0, 1, 2):
-        return JSONResponse({"error": "Camera source must be 0, 1, or 2."}, status_code=400)
+    if source not in (-1, 0, 1, 2):
+        return JSONResponse({"error": "Camera source must be -1, 0, 1, or 2."}, status_code=400)
+
+    chosen = source
+    debug = None
+    if source == -1:
+        chosen, debug = _pick_best_camera_source([0, 1, 2])
+        if chosen is None:
+            return JSONResponse({"error": "Cannot open usable camera source 0/1/2.", "debug": debug}, status_code=400)
 
     job_id = uuid.uuid4().hex
-    _camera_jobs[job_id] = int(source)
-    return {"job_id": job_id, "stream_url": f"/stream_camera/{job_id}"}
+    _camera_jobs[job_id] = int(chosen)
+    return {"job_id": job_id, "stream_url": f"/stream_camera/{job_id}", "source": int(chosen), "debug": debug}
+
+
+@app.get("/camera_raw")
+def camera_raw(source: int = -1):
+    import cv2
+
+    candidates = [source] if source >= 0 else [0, 1, 2]
+    cap = None
+    selected = None
+    if source == -1:
+        selected, _debug = _pick_best_camera_source([0, 1, 2])
+        if selected is not None:
+            cap = _open_cv_camera(int(selected))
+            if not cap.isOpened():
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                cap = None
+                selected = None
+    else:
+        for s in candidates:
+            try:
+                c = _open_cv_camera(int(s))
+                if c.isOpened():
+                    cap = c
+                    selected = int(s)
+                    break
+                c.release()
+            except Exception:
+                continue
+
+    if cap is None:
+        return JSONResponse({"error": "Cannot open camera source 0/1/2."}, status_code=400)
+
+    target_fps = max(1.0, float(CAMERA_STREAM_TARGET_FPS))
+    frame_interval = 1.0 / target_fps
+    jpeg_quality = max(40, min(95, int(CAMERA_STREAM_JPEG_QUALITY)))
+
+    def _gen():
+        next_due = time.perf_counter()
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if CAMERA_STREAM_OUTPUT_MAX_WIDTH > 0 and frame.shape[1] > CAMERA_STREAM_OUTPUT_MAX_WIDTH:
+                    scale = CAMERA_STREAM_OUTPUT_MAX_WIDTH / float(frame.shape[1])
+                    out_w = CAMERA_STREAM_OUTPUT_MAX_WIDTH
+                    out_h = max(2, int(round(frame.shape[0] * scale)))
+                    frame = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
+                ok, encoded = cv2.imencode(
+                    ".jpg",
+                    frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality],
+                )
+                if ok:
+                    payload = encoded.tobytes()
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Cache-Control: no-cache\r\n\r\n" + payload + b"\r\n"
+                    )
+
+                next_due += frame_interval
+                sleep_s = next_due - time.perf_counter()
+                if sleep_s > 0:
+                    time.sleep(min(sleep_s, 0.05))
+                else:
+                    next_due = time.perf_counter()
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+    headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+    if selected is not None:
+        headers["X-Camera-Source"] = str(selected)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers=headers,
+    )
 
 
 @app.get("/stream_video/{job_id}")
@@ -1059,7 +1306,7 @@ def stream_video(job_id: str):
         stream_jpeg_quality=STREAM_JPEG_QUALITY,
         stream_detect_every=STREAM_DETECT_EVERY,
         stream_yolo_imgsz=STREAM_YOLO_IMGSZ,
-        stream_min_conf=STREAM_MIN_CONF,
+        stream_min_conf=DETECT_CONF,
         stream_max_boxes=STREAM_MAX_BOXES,
         stream_classify_every=STREAM_CLASSIFY_EVERY,
         stream_classify_max_boxes=STREAM_CLASSIFY_MAX_BOXES,
@@ -1112,7 +1359,7 @@ def stream_camera(job_id: str):
         stream_jpeg_quality=CAMERA_STREAM_JPEG_QUALITY,
         stream_detect_every=CAMERA_STREAM_DETECT_EVERY,
         stream_yolo_imgsz=CAMERA_STREAM_YOLO_IMGSZ,
-        stream_min_conf=STREAM_MIN_CONF,
+        stream_min_conf=DETECT_CONF,
         stream_max_boxes=CAMERA_STREAM_MAX_BOXES,
         stream_classify_every=CAMERA_STREAM_CLASSIFY_EVERY,
         stream_classify_max_boxes=CAMERA_STREAM_CLASSIFY_MAX_BOXES,

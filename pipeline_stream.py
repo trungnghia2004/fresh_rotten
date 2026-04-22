@@ -194,6 +194,7 @@ def _stream_capture_frames(
                     img,
                     imgsz=cfg.stream_yolo_imgsz,
                     conf=cfg.stream_min_conf,
+                    collect_debug=False,
                 )
 
                 if det_list:

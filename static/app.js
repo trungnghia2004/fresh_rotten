@@ -1,5 +1,6 @@
 const fileInput = document.getElementById("fileInput");
 const predictBtn = document.getElementById("predictBtn");
+const rawCamBtn = document.getElementById("rawCamBtn");
 const inputHint = document.getElementById("inputHint");
 const globalResult = document.getElementById("globalResult");
 
@@ -23,7 +24,12 @@ let latestAnnotatedImages = { cnn: null, mobilenet: null };
 let browserCamStream = null;
 let browserCamTimer = null;
 let browserCamBusy = false;
-const BROWSER_CAM_INTERVAL_MS = 650;
+const BROWSER_CAM_INTERVAL_MS = 80;
+const REMOTE_SEND_MAX_WIDTH = 800;
+const REMOTE_SEND_ASPECT = 16 / 9;
+const REMOTE_SEND_JPEG_QUALITY = 0.74;
+const REMOTE_YOLO_IMGSZ = 512;
+const IS_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 function setText(el, value) {
   if (el) el.textContent = value;
@@ -123,6 +129,7 @@ function syncInputByMode() {
     fileInput.accept = "image/*";
     modelSwitch?.classList.remove("hidden");
     outResult?.classList.remove("hidden");
+    rawCamBtn?.classList.add("hidden");
     setText(inputHint, "\u0110ang \u1edf ch\u1ebf \u0111\u1ed9 \u1ea3nh. Ch\u1ecdn CNN ho\u1eb7c MobileNet tr\u01b0\u1edbc khi d\u1ef1 \u0111o\u00e1n.");
     setGlobalResult("Ch\u01b0a c\u00f3 k\u1ebft qu\u1ea3. H\u00e3y ch\u1ecdn t\u1ec7p, ch\u1ecdn model r\u1ed3i b\u1ea5m D\u1ef1 \u0111o\u00e1n.", "empty");
   } else if (mode === "video") {
@@ -131,6 +138,7 @@ function syncInputByMode() {
     fileInput.accept = "video/*";
     modelSwitch?.classList.add("hidden");
     outResult?.classList.add("hidden");
+    rawCamBtn?.classList.add("hidden");
     setText(inputHint, "\u0110ang \u1edf ch\u1ebf \u0111\u1ed9 video.");
     setGlobalResult("Ch\u01b0a c\u00f3 k\u1ebft qu\u1ea3. H\u00e3y ch\u1ecdn t\u1ec7p v\u00e0 b\u1ea5m D\u1ef1 \u0111o\u00e1n.", "empty");
   } else {
@@ -138,9 +146,23 @@ function syncInputByMode() {
     fileInput.classList.add("hidden");
     modelSwitch?.classList.add("hidden");
     outResult?.classList.add("hidden");
+    if (IS_LOCAL_HOST) {
+      rawCamBtn?.classList.remove("hidden");
+    } else {
+      rawCamBtn?.classList.add("hidden");
+    }
     setText(inputHint, "\u0110ang \u1edf ch\u1ebf \u0111\u1ed9 camera realtime.");
     setGlobalResult("Ch\u01b0a c\u00f3 k\u1ebft qu\u1ea3. B\u1ea5m D\u1ef1 \u0111o\u00e1n \u0111\u1ec3 ch\u1ea1y camera.", "empty");
   }
+}
+
+function startRawCameraPreview() {
+  resetAll();
+  const rawUrl = `/camera_raw?source=-1&_=${Date.now()}`;
+  showMedia(outputStream, rawUrl);
+  hideMedia(outputVideo);
+  hideMedia(outputImage);
+  setGlobalResult("\u0110ang test camera g\u1ed1c (kh\u00f4ng qua m\u00f4 h\u00ecnh)...", "ok");
 }
 
 function updateCounts() {
@@ -185,7 +207,7 @@ async function parseJsonResponse(res) {
   try {
     data = raw ? JSON.parse(raw) : {};
   } catch {
-    throw new Error(`API ${res.status}: ${raw || "Ph?n h?i r?ng t? server"}`);
+    throw new Error(`API ${res.status}: ${raw || "Ph\u1ea3n h\u1ed3i r\u1ed7ng t\u1eeb server"}`);
   }
   if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
   return data;
@@ -215,12 +237,11 @@ async function predictFrameBlob(blob) {
   const fd = new FormData();
   fd.append("file", blob, "frame.jpg");
   fd.append("selected_model", "mobilenet");
+  fd.append("allow_no_detection", "1");
+  fd.append("lite", "1");
+  fd.append("imgsz", String(REMOTE_YOLO_IMGSZ));
   const res = await fetch("/predict_image", { method: "POST", body: fd });
   return parseJsonResponse(res);
-}
-
-function isMobileBrowser() {
-  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
 }
 
 async function startBrowserCameraLoop() {
@@ -229,12 +250,13 @@ async function startBrowserCameraLoop() {
   }
 
   stopBrowserCameraLoop();
+  const isRemote = !IS_LOCAL_HOST;
   const constraints = {
     audio: false,
     video: {
       facingMode: { ideal: "environment" },
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
+      width: { ideal: isRemote ? 640 : 1280 },
+      height: { ideal: isRemote ? 360 : 720 },
     },
   };
 
@@ -248,16 +270,41 @@ async function startBrowserCameraLoop() {
   browserCamTimer = setInterval(async () => {
     if (!browserCamStream || browserCamBusy) return;
 
-    const w = inputVideo.videoWidth || 0;
-    const h = inputVideo.videoHeight || 0;
-    if (!w || !h) return;
+    const srcW = inputVideo.videoWidth || 0;
+    const srcH = inputVideo.videoHeight || 0;
+    if (!srcW || !srcH) return;
+
+    let w = srcW;
+    let h = srcH;
+    let sx = 0;
+    let sy = 0;
+    let sw = srcW;
+    let sh = srcH;
+    if (isRemote) {
+      w = REMOTE_SEND_MAX_WIDTH;
+      h = Math.max(2, Math.round(REMOTE_SEND_MAX_WIDTH / REMOTE_SEND_ASPECT));
+      const srcAspect = srcW / srcH;
+      if (srcAspect > REMOTE_SEND_ASPECT) {
+        sh = srcH;
+        sw = Math.max(2, Math.round(sh * REMOTE_SEND_ASPECT));
+        sx = Math.max(0, Math.round((srcW - sw) / 2));
+        sy = 0;
+      } else {
+        sw = srcW;
+        sh = Math.max(2, Math.round(sw / REMOTE_SEND_ASPECT));
+        sx = 0;
+        sy = Math.max(0, Math.round((srcH - sh) / 2));
+      }
+    }
 
     browserCamBusy = true;
     try {
       canvas.width = w;
       canvas.height = h;
-      ctx.drawImage(inputVideo, 0, 0, w, h);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+      ctx.drawImage(inputVideo, sx, sy, sw, sh, 0, 0, w, h);
+      const blob = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", isRemote ? REMOTE_SEND_JPEG_QUALITY : 0.85),
+      );
       if (!blob) throw new Error("Kh\u00f4ng \u0111\u1ecdc \u0111\u01b0\u1ee3c frame camera.");
 
       const data = await predictFrameBlob(blob);
@@ -269,7 +316,7 @@ async function startBrowserCameraLoop() {
 
       setGlobalResult("\u0110ang ch\u1ea1y camera \u0111i\u1ec7n tho\u1ea1i tr\u1ef1c ti\u1ebfp...", "ok");
     } catch (err) {
-      setGlobalResult(`L?i g?i API: ${err.message || err}`, "error");
+      setGlobalResult(`L\u1ed7i g\u1ecdi API: ${err.message || err}`, "error");
     } finally {
       browserCamBusy = false;
     }
@@ -277,33 +324,44 @@ async function startBrowserCameraLoop() {
 }
 
 async function startAutoCameraStream() {
-  if (isMobileBrowser()) {
+  // On server machine, prefer server-side camera stream for higher FPS and steady updates.
+  if (IS_LOCAL_HOST) {
+    let stream = null;
+    try {
+      stream = await startCameraStream(-1);
+    } catch {
+      try {
+        stream = await startCameraStream(0);
+      } catch {
+        try {
+          stream = await startCameraStream(1);
+        } catch {
+          stream = await startCameraStream(2);
+        }
+      }
+    }
+
+    const streamUrl = stream.stream_url.startsWith("http")
+      ? stream.stream_url
+      : new URL(stream.stream_url, window.location.origin).toString();
+    showMedia(outputStream, streamUrl);
+    hideMedia(outputVideo);
+    hideMedia(outputImage);
+    setGlobalResult("\\u0110ang stream camera \\u0111\\u00e3 qua m\\u00f4 h\\u00ecnh...", "ok");
+    return;
+  }
+
+  if (window.isSecureContext && navigator.mediaDevices?.getUserMedia) {
     try {
       await startBrowserCameraLoop();
       return;
     } catch {
-      // fallback sang ngu?n camera server-side
+      // fallback sang nguồn camera server-side
     }
   }
 
-  let stream = null;
-  try {
-    stream = await startCameraStream(0);
-  } catch {
-    try {
-      stream = await startCameraStream(1);
-    } catch {
-      stream = await startCameraStream(2);
-    }
-  }
-
-  const streamUrl = stream.stream_url.startsWith("http")
-    ? stream.stream_url
-    : new URL(stream.stream_url, window.location.origin).toString();
-  showMedia(outputStream, streamUrl);
-  hideMedia(outputVideo);
-  hideMedia(outputImage);
-  setGlobalResult("\u0110ang stream camera \u0111\u00e3 qua m\u00f4 h\u00ecnh...", "ok");
+  // On remote clients (ngrok/LAN), camera mode should use client camera only.
+  throw new Error("Kh\u00f4ng truy c\u1eadp \u0111\u01b0\u1ee3c camera tr\u00ean m\u00e1y n\u00e0y. H\u00e3y c\u1ea5p quy\u1ec1n camera cho tr\u00ecnh duy\u1ec7t.");
 }
 
 modelRadios.forEach((el) => el.addEventListener("change", updateCounts));
@@ -338,9 +396,9 @@ predictBtn.addEventListener("click", async () => {
       await startAutoCameraStream();
     } catch (err) {
       if (String(err).toLowerCase().includes("secure") || window.location.protocol !== "https:") {
-        setGlobalResult("Camera tr?c ti?p tr?n ?i?n tho?i c?n HTTPS ho?c localhost.", "error");
+        setGlobalResult("Camera tr\u1ef1c ti\u1ebfp tr\u00ean \u0111i\u1ec7n tho\u1ea1i c\u1ea7n HTTPS ho\u1eb7c localhost.", "error");
       } else {
-        setGlobalResult(`L?i g?i API: ${err.message || err}`, "error");
+        setGlobalResult(`L\u1ed7i g\u1ecdi API: ${err.message || err}`, "error");
       }
     }
     return;
@@ -386,7 +444,7 @@ predictBtn.addEventListener("click", async () => {
       updateCounts();
       setGlobalResult("\u0110\u00e3 c\u00f3 k\u1ebft qu\u1ea3.", "ok");
     } catch (err) {
-      setGlobalResult(`L?i g?i API: ${err.message || err}`, "error");
+      setGlobalResult(`L\u1ed7i g\u1ecdi API: ${err.message || err}`, "error");
     }
     return;
   }
@@ -407,8 +465,13 @@ predictBtn.addEventListener("click", async () => {
     hideMedia(outputImage);
     setGlobalResult("\u0110ang stream video \u0111\u00e3 qua m\u00f4 h\u00ecnh...", "ok");
   } catch (err) {
-    setGlobalResult(`L?i g?i API: ${err.message || err}`, "error");
+    setGlobalResult(`L\u1ed7i g\u1ecdi API: ${err.message || err}`, "error");
   }
+});
+
+rawCamBtn?.addEventListener("click", () => {
+  if (getMode() !== "camera") return;
+  startRawCameraPreview();
 });
 
 syncInputByMode();
