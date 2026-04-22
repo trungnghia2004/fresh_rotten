@@ -29,12 +29,72 @@ let browserCamBusy = false;
 const CAMERA_TARGET_FPS = 30;
 const BROWSER_CAM_INTERVAL_MS = Math.max(20, Math.round(1000 / CAMERA_TARGET_FPS));
 const REMOTE_SEND_ASPECT = 16 / 9;
-const REMOTE_SEND_WIDTH = 1280;
-const REMOTE_SEND_HEIGHT = 720;
-const REMOTE_SEND_JPEG_QUALITY = 0.78;
-const REMOTE_YOLO_IMGSZ = 640;
+const REMOTE_SEND_WIDTH = 960;
+const REMOTE_SEND_HEIGHT = 540;
+const REMOTE_SEND_JPEG_QUALITY = 0.7;
+const REMOTE_YOLO_IMGSZ = 448;
 const REMOTE_HFLIP = true;
+const CAM_DET_HOLD_MS = 450;
+const CAM_DET_SMOOTH_ALPHA = 0.35;
+
+let camLastDetections = [];
+let camLastFrameSize = null;
+let camLastCaptureMeta = null;
+let camLastDetectionTs = 0;
 const IS_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+
+function boxIou(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== 4 || b.length !== 4) return 0;
+  const ax1 = a[0], ay1 = a[1], ax2 = a[2], ay2 = a[3];
+  const bx1 = b[0], by1 = b[1], bx2 = b[2], by2 = b[3];
+  const ix1 = Math.max(ax1, bx1);
+  const iy1 = Math.max(ay1, by1);
+  const ix2 = Math.min(ax2, bx2);
+  const iy2 = Math.min(ay2, by2);
+  const iw = Math.max(0, ix2 - ix1);
+  const ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+  if (inter <= 0) return 0;
+  const areaA = Math.max(0, ax2 - ax1) * Math.max(0, ay2 - ay1);
+  const areaB = Math.max(0, bx2 - bx1) * Math.max(0, by2 - by1);
+  const union = areaA + areaB - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+function stabilizeCameraDetections(current, previous) {
+  if (!Array.isArray(current) || current.length === 0) return [];
+  if (!Array.isArray(previous) || previous.length === 0) return current;
+
+  return current.map((cur) => {
+    const curBox = cur?.box;
+    if (!Array.isArray(curBox) || curBox.length !== 4) return cur;
+    let best = null;
+    let bestIou = 0;
+    for (const prev of previous) {
+      const prevBox = prev?.box;
+      if (!Array.isArray(prevBox) || prevBox.length !== 4) continue;
+      if ((prev?.fruit || "") !== (cur?.fruit || "")) continue;
+      const iou = boxIou(curBox, prevBox);
+      if (iou > bestIou) {
+        bestIou = iou;
+        best = prev;
+      }
+    }
+    if (!best || bestIou < 0.2) return cur;
+
+    const p = best.box;
+    const c = cur.box;
+    const a = CAM_DET_SMOOTH_ALPHA;
+    const smoothedBox = [
+      Math.round(p[0] * (1 - a) + c[0] * a),
+      Math.round(p[1] * (1 - a) + c[1] * a),
+      Math.round(p[2] * (1 - a) + c[2] * a),
+      Math.round(p[3] * (1 - a) + c[3] * a),
+    ];
+    const quality = cur?.quality && cur.quality !== "unknown" ? cur.quality : (best?.quality || "unknown");
+    return { ...cur, box: smoothedBox, quality };
+  });
+}
 
 function setText(el, value) {
   if (el) el.textContent = value;
@@ -93,7 +153,7 @@ function hideOverlay() {
   outputCamOverlay?.classList.add("hidden");
 }
 
-function drawOverlayDetections(detections = [], frameSize = null, mirror = false) {
+function drawOverlayDetections(detections = [], frameSize = null, mirror = false, captureMeta = null) {
   if (!outputCamOverlay || !outputCamVideo) return;
   const displayW = outputCamVideo.clientWidth || 0;
   const displayH = outputCamVideo.clientHeight || 0;
@@ -106,7 +166,8 @@ function drawOverlayDetections(detections = [], frameSize = null, mirror = false
     outputCamOverlay.width = cw;
     outputCamOverlay.height = ch;
   }
-  outputCamOverlay.style.transform = mirror ? "scaleX(-1)" : "none";
+  // Do not mirror canvas text. We mirror box coordinates manually below.
+  outputCamOverlay.style.transform = "none";
   outputCamOverlay.classList.remove("hidden");
 
   const ctx = outputCamOverlay.getContext("2d");
@@ -115,10 +176,24 @@ function drawOverlayDetections(detections = [], frameSize = null, mirror = false
   ctx.clearRect(0, 0, displayW, displayH);
   if (!Array.isArray(detections) || detections.length === 0) return;
 
-  const fw = Math.max(1, Number(frameSize?.width || REMOTE_SEND_WIDTH));
-  const fh = Math.max(1, Number(frameSize?.height || REMOTE_SEND_HEIGHT));
-  const sx = displayW / fw;
-  const sy = displayH / fh;
+  // Mapping chain:
+  // detection box coords (on sent frame fw/fh)
+  // -> source camera coords (srcW/srcH with crop sx0,sy0,sw0,sh0)
+  // -> displayed video coords (object-fit contain)
+  const fw = Math.max(1, Number(frameSize?.width || captureMeta?.fw || REMOTE_SEND_WIDTH));
+  const fh = Math.max(1, Number(frameSize?.height || captureMeta?.fh || REMOTE_SEND_HEIGHT));
+  const srcW = Math.max(1, Number(captureMeta?.srcW || outputCamVideo.videoWidth || fw));
+  const srcH = Math.max(1, Number(captureMeta?.srcH || outputCamVideo.videoHeight || fh));
+  const sx0 = Math.max(0, Number(captureMeta?.sx || 0));
+  const sy0 = Math.max(0, Number(captureMeta?.sy || 0));
+  const sw0 = Math.max(1, Number(captureMeta?.sw || srcW));
+  const sh0 = Math.max(1, Number(captureMeta?.sh || srcH));
+
+  const containScale = Math.min(displayW / srcW, displayH / srcH);
+  const drawW = srcW * containScale;
+  const drawH = srcH * containScale;
+  const offX = (displayW - drawW) / 2;
+  const offY = (displayH - drawH) / 2;
 
   ctx.lineWidth = 2;
   ctx.font = "16px Segoe UI";
@@ -127,10 +202,27 @@ function drawOverlayDetections(detections = [], frameSize = null, mirror = false
   for (const d of detections) {
     const box = d?.box || [];
     if (!Array.isArray(box) || box.length !== 4) continue;
-    const x1 = Math.round(box[0] * sx);
-    const y1 = Math.round(box[1] * sy);
-    const x2 = Math.round(box[2] * sx);
-    const y2 = Math.round(box[3] * sy);
+    const bx1 = Number(box[0]);
+    const by1 = Number(box[1]);
+    const bx2 = Number(box[2]);
+    const by2 = Number(box[3]);
+
+    // back to source coords from cropped-sent frame coords
+    const srcX1 = sx0 + (bx1 / fw) * sw0;
+    const srcY1 = sy0 + (by1 / fh) * sh0;
+    const srcX2 = sx0 + (bx2 / fw) * sw0;
+    const srcY2 = sy0 + (by2 / fh) * sh0;
+
+    let x1 = Math.round(offX + srcX1 * containScale);
+    const y1 = Math.round(offY + srcY1 * containScale);
+    let x2 = Math.round(offX + srcX2 * containScale);
+    const y2 = Math.round(offY + srcY2 * containScale);
+    if (mirror) {
+      const nx1 = displayW - x2;
+      const nx2 = displayW - x1;
+      x1 = nx1;
+      x2 = nx2;
+    }
     const w = Math.max(1, x2 - x1);
     const h = Math.max(1, y2 - y1);
 
@@ -191,6 +283,10 @@ function resetAll() {
   setText(outCounts, defaultCountsText);
   latestModels = { cnn: null, mobilenet: null };
   latestAnnotatedImages = { cnn: null, mobilenet: null };
+  camLastDetections = [];
+  camLastFrameSize = null;
+  camLastCaptureMeta = null;
+  camLastDetectionTs = 0;
 }
 
 function syncInputByMode() {
@@ -390,18 +486,23 @@ async function startBrowserCameraLoop() {
 
     browserCamBusy = true;
     try {
+      const captureMeta = {
+        srcW,
+        srcH,
+        sx,
+        sy,
+        sw,
+        sh,
+        fw: w,
+        fh: h,
+      };
+
       canvas.width = w;
       canvas.height = h;
 
-      if (isRemote && REMOTE_HFLIP) {
-        ctx.save();
-        ctx.translate(w, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(inputVideo, sx, sy, sw, sh, 0, 0, w, h);
-        ctx.restore();
-      } else {
-        ctx.drawImage(inputVideo, sx, sy, sw, sh, 0, 0, w, h);
-      }
+      // Keep inference frame unmirrored for stable geometry.
+      // Mirroring is applied only on displayed video/overlay.
+      ctx.drawImage(inputVideo, sx, sy, sw, sh, 0, 0, w, h);
 
       const blob = await new Promise((resolve) =>
         canvas.toBlob(resolve, "image/jpeg", isRemote ? REMOTE_SEND_JPEG_QUALITY : 0.85),
@@ -410,7 +511,26 @@ async function startBrowserCameraLoop() {
 
       const data = await predictFrameBlob(blob, REMOTE_YOLO_IMGSZ);
       if (isRemote) {
-        drawOverlayDetections(data.detections || [], data.frame_size || null, REMOTE_HFLIP);
+        const now = Date.now();
+        const incoming = Array.isArray(data.detections) ? data.detections : [];
+        if (incoming.length > 0) {
+          const stable = stabilizeCameraDetections(incoming, camLastDetections);
+          camLastDetections = stable;
+          camLastFrameSize = data.frame_size || camLastFrameSize || { width: w, height: h };
+          camLastCaptureMeta = captureMeta;
+          camLastDetectionTs = now;
+        } else if (now - camLastDetectionTs > CAM_DET_HOLD_MS) {
+          camLastDetections = [];
+          camLastFrameSize = data.frame_size || camLastFrameSize;
+          camLastCaptureMeta = captureMeta;
+        }
+
+        drawOverlayDetections(
+          camLastDetections,
+          camLastFrameSize || data.frame_size || null,
+          REMOTE_HFLIP,
+          camLastCaptureMeta || captureMeta,
+        );
       } else if (data.annotated_image) {
         showMedia(outputImage, data.annotated_image);
         hideMedia(outputVideo);
