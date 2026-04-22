@@ -24,6 +24,11 @@ try:
 except Exception:  # ultralytics optional
     YOLO = None
 
+try:
+    import torch
+except Exception:
+    torch = None
+
 # Force Ultralytics to use a local writable config/cache to avoid AppData permission errors
 ULTRA_HOME = Path(__file__).resolve().parent / ".ultralytics"
 ULTRA_HOME.mkdir(exist_ok=True)
@@ -54,16 +59,14 @@ STREAM_DETECT_EVERY = max(1, int(os.getenv("STREAM_DETECT_EVERY", "4")))
 STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("STREAM_CLASSIFY_EVERY", "3")))
 STREAM_JPEG_QUALITY = int(os.getenv("STREAM_JPEG_QUALITY", "65"))
 STREAM_YOLO_IMGSZ = max(320, int(os.getenv("STREAM_YOLO_IMGSZ", "512")))
-STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "30"))
+STREAM_TARGET_FPS = float(os.getenv("STREAM_TARGET_FPS", "60"))
 STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("STREAM_OUTPUT_MAX_WIDTH", "720")))
-# Đồng bộ ngưỡng detect cho toàn bộ ảnh/video/camera.
-# Có thể override riêng bằng STREAM_MIN_CONF nếu cần, nhưng mặc định theo DETECT_CONF.
 STREAM_MIN_CONF = float(os.getenv("STREAM_MIN_CONF", str(DETECT_CONF)))
 STREAM_MAX_BOXES = max(1, int(os.getenv("STREAM_MAX_BOXES", "10")))
 STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "10")))
 ANNOTATION_FONT_SIZE = max(10, int(os.getenv("ANNOTATION_FONT_SIZE", "18")))
 ANNOTATION_MAX_WIDTH = max(0, int(os.getenv("ANNOTATION_MAX_WIDTH", "960")))
-CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "30"))
+CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "60"))
 CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "1")))
 CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "1")))
 CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "88"))
@@ -73,10 +76,11 @@ CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "10"))
 CAMERA_STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_MAX_BOXES", "10")))
 CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "1280")))
 CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "720")))
-CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "30"))
+CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "60"))
 CAMERA_CAPTURE_BUFFER_SIZE = max(0, int(os.getenv("CAMERA_CAPTURE_BUFFER_SIZE", "1")))
 CAMERA_ASYNC_INFERENCE = os.getenv("CAMERA_ASYNC_INFERENCE", "1") == "1"
 CAMERA_LITE_MAX_BOXES = max(1, int(os.getenv("CAMERA_LITE_MAX_BOXES", "3")))
+CAMERA_LITE_RENDER_MAX_WIDTH = max(320, int(os.getenv("CAMERA_LITE_RENDER_MAX_WIDTH", "720")))
 
 MODEL_PATHS = {
     "cnn": BASE_DIR / "weights/cnn_best.keras",
@@ -92,6 +96,7 @@ _class_names: List[str] = []
 _label_to_idx: Dict[str, int] = {}
 _idx_to_label: Dict[int, str] = {}
 _detector: YOLO | None = None
+_detector_device = "cpu"
 _stream_jobs: Dict[str, str] = {}
 _camera_jobs: Dict[str, int] = {}
 try:
@@ -179,7 +184,7 @@ def load_class_names_from_file(path: Path) -> List[str]:
 
 
 def load_assets() -> None:
-    global _models, _class_names, _label_to_idx, _idx_to_label, _detector
+    global _models, _class_names, _label_to_idx, _idx_to_label, _detector, _detector_device
 
     if not _models:
         tf_mod = _get_tf()
@@ -212,25 +217,35 @@ def load_assets() -> None:
 
     if _detector is None and YOLO and DETECT_MODEL.exists():
         _detector = YOLO(str(DETECT_MODEL))
-        try:
-            _detector.to("cuda")
-        except Exception:
-            pass
+        if torch is not None and torch.cuda.is_available():
+            try:
+                _detector.to("cuda")
+                _detector_device = "cuda:0"
+            except Exception:
+                _detector_device = "cpu"
+        else:
+            _detector_device = "cpu"
+        print(f"[YOLO] device={_detector_device}")
 
 
 
 def ensure_detector() -> bool:
-    global _detector
+    global _detector, _detector_device
     if _detector is not None:
         return True
     if not YOLO or not DETECT_MODEL.exists():
         return False
     try:
         _detector = YOLO(str(DETECT_MODEL))
-        try:
-            _detector.to("cuda")
-        except Exception:
-            pass
+        if torch is not None and torch.cuda.is_available():
+            try:
+                _detector.to("cuda")
+                _detector_device = "cuda:0"
+            except Exception:
+                _detector_device = "cpu"
+        else:
+            _detector_device = "cpu"
+        print(f"[YOLO] device={_detector_device}")
         return True
     except Exception:
         return False
@@ -354,11 +369,13 @@ def render_annotated(
     model_name: str = "mobilenet",
     fmt: str = "PNG",
     quality: int = 85,
+    max_width: int | None = None,
 ) -> str:
     """Vẽ box + nhãn fruit_quality lên ảnh, trả về data URL base64."""
     if not detections:
         return ""
-    img, draw_detections = resize_pil_for_annotation(image, detections, ANNOTATION_MAX_WIDTH)
+    render_max_w = ANNOTATION_MAX_WIDTH if max_width is None else max(320, int(max_width))
+    img, draw_detections = resize_pil_for_annotation(image, detections, render_max_w)
     img = annotate_pil(img, draw_detections, model_name=model_name)
     return pil_to_data_url(img, fmt=fmt, quality=quality)
 
@@ -776,6 +793,7 @@ def detect_and_crop(
         conf=DETECT_CONF if conf is None else conf,
         iou=DETECT_IOU,
         max_det=DETECT_MAX_DET,
+        device=0 if (_detector_device.startswith("cuda")) else "cpu",
         agnostic_nms=True,
         verbose=False,
     )[0]
@@ -868,6 +886,7 @@ async def predict_image(
     allow_no_detection: str | None = Form(None),
     imgsz: int | None = Form(None),
     lite: str | None = Form(None),
+    lite_render: str | None = Form(None),
 ):
     if not file.content_type or not file.content_type.startswith("image/"):
         return JSONResponse({"error": "Please upload an image."}, status_code=400)
@@ -879,6 +898,7 @@ async def predict_image(
             return JSONResponse({"error": "selected_model must be 'cnn' or 'mobilenet'."}, status_code=400)
 
         lite_mode = (lite or "").strip() == "1"
+        lite_render_mode = (lite_render or "").strip() == "1"
         render_model_names = [selected] if selected else list(_models.keys())
         req_imgsz = 640
         if imgsz is not None:
@@ -892,7 +912,7 @@ async def predict_image(
         det_list, max_conf, dbg = detect_and_crop(img, imgsz=req_imgsz, collect_debug=not lite_mode)
         if not det_list:
             if (allow_no_detection or "").strip() == "1":
-                raw_img = pil_to_data_url(img)
+                raw_img = pil_to_data_url(img) if (not lite_mode or lite_render_mode) else ""
                 payload = {
                     "mode": "image",
                     "detections": [],
@@ -900,6 +920,7 @@ async def predict_image(
                     "sampled_frames": 1,
                     "main_detection": None,
                     "annotated_image": raw_img,
+                    "frame_size": {"width": img.width, "height": img.height},
                     "notice": f"No fruits detected by YOLO. max_conf={max_conf:.3f}",
                 }
                 if not lite_mode:
@@ -958,23 +979,64 @@ async def predict_image(
                 m["quality_counts"] = total_qc_by_model.get(name, {"fresh": 0, "rotten": 0})
                 m["crop_count"] = crop_count
 
-        render_fmt = "JPEG" if lite_mode else "PNG"
-        render_quality = 80 if lite_mode else 90
+        if lite_mode:
+            lite_detections = []
+            for item in detections:
+                d = item.get("detection", {})
+                models = item.get("models") or {}
+                picked_model = {}
+                if selected and selected in models:
+                    picked_model = models.get(selected, {})
+                elif "mobilenet" in models:
+                    picked_model = models.get("mobilenet", {})
+                elif models:
+                    picked_model = next(iter(models.values()))
+                lite_detections.append(
+                    {
+                        "box": d.get("box", []),
+                        "fruit": d.get("label", "unknown"),
+                        "quality": picked_model.get("quality", "unknown"),
+                        "confidence": picked_model.get("confidence", 0.0),
+                    }
+                )
+
+            annotated_image = ""
+            if lite_render_mode:
+                render_model = selected or "mobilenet"
+                annotated_image = render_annotated(
+                    img,
+                    detections,
+                    model_name=render_model,
+                    fmt="JPEG",
+                    quality=80,
+                    max_width=CAMERA_LITE_RENDER_MAX_WIDTH,
+                )
+            return {
+                "mode": "image",
+                "main_detection": main_detection,
+                "detections": lite_detections,
+                "frame_size": {"width": img.width, "height": img.height},
+                "annotated_image": annotated_image,
+            }
+
+        render_fmt = "PNG"
+        render_quality = 90
+        render_max_width = ANNOTATION_MAX_WIDTH
         annotated_images = {
-            name: render_annotated(img, detections, model_name=name, fmt=render_fmt, quality=render_quality)
+            name: render_annotated(
+                img,
+                detections,
+                model_name=name,
+                fmt=render_fmt,
+                quality=render_quality,
+                max_width=render_max_width,
+            )
             for name in render_model_names
         }
         if selected:
             annotated_image = annotated_images.get(selected, "")
         else:
             annotated_image = annotated_images.get("mobilenet") or next(iter(annotated_images.values()), "")
-
-        if lite_mode:
-            return {
-                "mode": "image",
-                "main_detection": main_detection,
-                "annotated_image": annotated_image,
-            }
 
         payload = {
             "mode": "image",

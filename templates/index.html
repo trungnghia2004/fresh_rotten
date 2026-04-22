@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fresh&Rotten</title>
-    <link rel="stylesheet" href="/static/style.css?v=4" />
+    <link rel="stylesheet" href="/static/style.css?v=5" />
   </head>
   <body>
     <main class="wrap">
@@ -53,13 +53,15 @@
               <img id="outputImage" class="preview hidden" alt="Output image" />
               <video id="outputVideo" class="preview hidden" controls playsinline type="video/mp4"></video>
               <img id="outputStream" class="preview hidden" alt="Streaming output" />
+              <video id="outputCamVideo" class="preview hidden" autoplay playsinline muted></video>
+              <canvas id="outputCamOverlay" class="overlay-canvas hidden"></canvas>
             </div>
           </article>
         </section>
       </section>
     </main>
 
-    <script src="/static/app.js?v=17"></script>
+    <script src="/static/app.js?v=21"></script>
   </body>
 </html>
 

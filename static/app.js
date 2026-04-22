@@ -9,6 +9,8 @@ const inputVideo = document.getElementById("inputVideo");
 const outputImage = document.getElementById("outputImage");
 const outputVideo = document.getElementById("outputVideo");
 const outputStream = document.getElementById("outputStream");
+const outputCamVideo = document.getElementById("outputCamVideo");
+const outputCamOverlay = document.getElementById("outputCamOverlay");
 
 const outCounts = document.getElementById("outCounts");
 const outResult = document.getElementById("outResult");
@@ -24,11 +26,14 @@ let latestAnnotatedImages = { cnn: null, mobilenet: null };
 let browserCamStream = null;
 let browserCamTimer = null;
 let browserCamBusy = false;
-const BROWSER_CAM_INTERVAL_MS = 80;
-const REMOTE_SEND_MAX_WIDTH = 800;
+const CAMERA_TARGET_FPS = 30;
+const BROWSER_CAM_INTERVAL_MS = Math.max(20, Math.round(1000 / CAMERA_TARGET_FPS));
 const REMOTE_SEND_ASPECT = 16 / 9;
-const REMOTE_SEND_JPEG_QUALITY = 0.74;
-const REMOTE_YOLO_IMGSZ = 512;
+const REMOTE_SEND_WIDTH = 1280;
+const REMOTE_SEND_HEIGHT = 720;
+const REMOTE_SEND_JPEG_QUALITY = 0.78;
+const REMOTE_YOLO_IMGSZ = 640;
+const REMOTE_HFLIP = true;
 const IS_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 function setText(el, value) {
@@ -65,14 +70,84 @@ function showMedia(el, url, mime) {
   el.classList.remove("hidden");
 }
 
-function showLiveVideo(el, stream) {
+function showLiveVideo(el, stream, mirror = false) {
   if (!el) return;
   el.srcObject = stream;
   el.muted = true;
   el.playsInline = true;
   el.autoplay = true;
+  el.style.transform = mirror ? "scaleX(-1)" : "none";
   el.classList.remove("hidden");
   el.play().catch(() => {});
+}
+
+function clearOverlay() {
+  if (!outputCamOverlay) return;
+  const ctx = outputCamOverlay.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, outputCamOverlay.width, outputCamOverlay.height);
+}
+
+function hideOverlay() {
+  clearOverlay();
+  outputCamOverlay?.classList.add("hidden");
+}
+
+function drawOverlayDetections(detections = [], frameSize = null, mirror = false) {
+  if (!outputCamOverlay || !outputCamVideo) return;
+  const displayW = outputCamVideo.clientWidth || 0;
+  const displayH = outputCamVideo.clientHeight || 0;
+  if (!displayW || !displayH) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(2, Math.round(displayW * dpr));
+  const ch = Math.max(2, Math.round(displayH * dpr));
+  if (outputCamOverlay.width !== cw || outputCamOverlay.height !== ch) {
+    outputCamOverlay.width = cw;
+    outputCamOverlay.height = ch;
+  }
+  outputCamOverlay.style.transform = mirror ? "scaleX(-1)" : "none";
+  outputCamOverlay.classList.remove("hidden");
+
+  const ctx = outputCamOverlay.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, displayW, displayH);
+  if (!Array.isArray(detections) || detections.length === 0) return;
+
+  const fw = Math.max(1, Number(frameSize?.width || REMOTE_SEND_WIDTH));
+  const fh = Math.max(1, Number(frameSize?.height || REMOTE_SEND_HEIGHT));
+  const sx = displayW / fw;
+  const sy = displayH / fh;
+
+  ctx.lineWidth = 2;
+  ctx.font = "16px Segoe UI";
+  ctx.textBaseline = "top";
+
+  for (const d of detections) {
+    const box = d?.box || [];
+    if (!Array.isArray(box) || box.length !== 4) continue;
+    const x1 = Math.round(box[0] * sx);
+    const y1 = Math.round(box[1] * sy);
+    const x2 = Math.round(box[2] * sx);
+    const y2 = Math.round(box[3] * sy);
+    const w = Math.max(1, x2 - x1);
+    const h = Math.max(1, y2 - y1);
+
+    const fruit = String(d?.fruit || "unknown");
+    const quality = String(d?.quality || "unknown");
+    const label = `${fruit}_${quality}`;
+
+    ctx.strokeStyle = "#00e05a";
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.strokeRect(x1, y1, w, h);
+    const tw = Math.ceil(ctx.measureText(label).width);
+    const th = 20;
+    const ty = Math.max(0, y1 - th - 2);
+    ctx.fillRect(x1, ty, tw + 10, th);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(label, x1 + 5, ty + 2);
+  }
 }
 
 function getMode() {
@@ -111,6 +186,8 @@ function resetAll() {
   hideMedia(outputImage);
   hideMedia(outputVideo);
   hideMedia(outputStream);
+  hideMedia(outputCamVideo);
+  hideOverlay();
   setText(outCounts, defaultCountsText);
   latestModels = { cnn: null, mobilenet: null };
   latestAnnotatedImages = { cnn: null, mobilenet: null };
@@ -151,7 +228,7 @@ function syncInputByMode() {
     } else {
       rawCamBtn?.classList.add("hidden");
     }
-    setText(inputHint, "\u0110ang \u1edf ch\u1ebf \u0111\u1ed9 camera realtime.");
+    setText(inputHint, "\u0110ang ch\u1ea1y camera.");
     setGlobalResult("Ch\u01b0a c\u00f3 k\u1ebft qu\u1ea3. B\u1ea5m D\u1ef1 \u0111o\u00e1n \u0111\u1ec3 ch\u1ea1y camera.", "empty");
   }
 }
@@ -162,6 +239,8 @@ function startRawCameraPreview() {
   showMedia(outputStream, rawUrl);
   hideMedia(outputVideo);
   hideMedia(outputImage);
+  hideMedia(outputCamVideo);
+  hideOverlay();
   setGlobalResult("\u0110ang test camera g\u1ed1c (kh\u00f4ng qua m\u00f4 h\u00ecnh)...", "ok");
 }
 
@@ -233,13 +312,14 @@ async function postFile(url, file, selectedModel = null) {
   return parseJsonResponse(res);
 }
 
-async function predictFrameBlob(blob) {
+async function predictFrameBlob(blob, imgsz) {
   const fd = new FormData();
   fd.append("file", blob, "frame.jpg");
   fd.append("selected_model", "mobilenet");
   fd.append("allow_no_detection", "1");
   fd.append("lite", "1");
-  fd.append("imgsz", String(REMOTE_YOLO_IMGSZ));
+  fd.append("lite_render", "0");
+  fd.append("imgsz", String(imgsz));
   const res = await fetch("/predict_image", { method: "POST", body: fd });
   return parseJsonResponse(res);
 }
@@ -255,13 +335,23 @@ async function startBrowserCameraLoop() {
     audio: false,
     video: {
       facingMode: { ideal: "environment" },
-      width: { ideal: isRemote ? 640 : 1280 },
-      height: { ideal: isRemote ? 360 : 720 },
+      width: { ideal: isRemote ? 1280 : 1280, min: 960 },
+      height: { ideal: isRemote ? 720 : 720, min: 540 },
+      frameRate: { ideal: CAMERA_TARGET_FPS, min: 24, max: 30 },
     },
   };
 
   browserCamStream = await navigator.mediaDevices.getUserMedia(constraints);
-  showLiveVideo(inputVideo, browserCamStream);
+  showLiveVideo(inputVideo, browserCamStream, isRemote && REMOTE_HFLIP);
+  if (isRemote) {
+    showLiveVideo(outputCamVideo, browserCamStream, REMOTE_HFLIP);
+    hideMedia(outputImage);
+    hideMedia(outputVideo);
+    hideMedia(outputStream);
+  } else {
+    hideMedia(outputCamVideo);
+    hideOverlay();
+  }
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -280,9 +370,10 @@ async function startBrowserCameraLoop() {
     let sy = 0;
     let sw = srcW;
     let sh = srcH;
+
     if (isRemote) {
-      w = REMOTE_SEND_MAX_WIDTH;
-      h = Math.max(2, Math.round(REMOTE_SEND_MAX_WIDTH / REMOTE_SEND_ASPECT));
+      w = REMOTE_SEND_WIDTH;
+      h = REMOTE_SEND_HEIGHT;
       const srcAspect = srcW / srcH;
       if (srcAspect > REMOTE_SEND_ASPECT) {
         sh = srcH;
@@ -301,20 +392,34 @@ async function startBrowserCameraLoop() {
     try {
       canvas.width = w;
       canvas.height = h;
-      ctx.drawImage(inputVideo, sx, sy, sw, sh, 0, 0, w, h);
+
+      if (isRemote && REMOTE_HFLIP) {
+        ctx.save();
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(inputVideo, sx, sy, sw, sh, 0, 0, w, h);
+        ctx.restore();
+      } else {
+        ctx.drawImage(inputVideo, sx, sy, sw, sh, 0, 0, w, h);
+      }
+
       const blob = await new Promise((resolve) =>
         canvas.toBlob(resolve, "image/jpeg", isRemote ? REMOTE_SEND_JPEG_QUALITY : 0.85),
       );
       if (!blob) throw new Error("Kh\u00f4ng \u0111\u1ecdc \u0111\u01b0\u1ee3c frame camera.");
 
-      const data = await predictFrameBlob(blob);
-      if (data.annotated_image) {
+      const data = await predictFrameBlob(blob, REMOTE_YOLO_IMGSZ);
+      if (isRemote) {
+        drawOverlayDetections(data.detections || [], data.frame_size || null, REMOTE_HFLIP);
+      } else if (data.annotated_image) {
         showMedia(outputImage, data.annotated_image);
         hideMedia(outputVideo);
         hideMedia(outputStream);
+        hideMedia(outputCamVideo);
+        hideOverlay();
       }
 
-      setGlobalResult("\u0110ang ch\u1ea1y camera \u0111i\u1ec7n tho\u1ea1i tr\u1ef1c ti\u1ebfp...", "ok");
+      setGlobalResult("\u0110ang ch\u1ea1y camera.", "ok");
     } catch (err) {
       setGlobalResult(`L\u1ed7i g\u1ecdi API: ${err.message || err}`, "error");
     } finally {
@@ -347,6 +452,8 @@ async function startAutoCameraStream() {
     showMedia(outputStream, streamUrl);
     hideMedia(outputVideo);
     hideMedia(outputImage);
+    hideMedia(outputCamVideo);
+    hideOverlay();
     setGlobalResult("\\u0110ang stream camera \\u0111\\u00e3 qua m\\u00f4 h\\u00ecnh...", "ok");
     return;
   }
@@ -425,6 +532,8 @@ predictBtn.addEventListener("click", async () => {
         showMedia(outputImage, annotated);
         hideMedia(outputVideo);
         hideMedia(outputStream);
+        hideMedia(outputCamVideo);
+        hideOverlay();
       }
 
       let cnnData = data.models?.cnn;
@@ -453,6 +562,8 @@ predictBtn.addEventListener("click", async () => {
   showMedia(outputVideo, objectUrl, file.type || "video/mp4");
   hideMedia(outputImage);
   hideMedia(outputStream);
+  hideMedia(outputCamVideo);
+  hideOverlay();
   setGlobalResult("\u0110ang t\u1ea3i video v\u00e0 kh\u1edfi t\u1ea1o stream...", "ok");
 
   try {
