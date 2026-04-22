@@ -62,15 +62,15 @@ STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "1
 ANNOTATION_FONT_SIZE = max(10, int(os.getenv("ANNOTATION_FONT_SIZE", "18")))
 ANNOTATION_MAX_WIDTH = max(0, int(os.getenv("ANNOTATION_MAX_WIDTH", "960")))
 CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "30"))
-CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "5")))
+CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "3")))
 CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "10")))
 CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "80"))
-CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "320")))
+CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "960")))
 CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "720")))
 CAMERA_STREAM_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_MAX_BOXES", "6")))
 CAMERA_STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_MAX_BOXES", "10")))
-CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "640")))
-CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "480")))
+CAMERA_CAPTURE_WIDTH = max(0, int(os.getenv("CAMERA_CAPTURE_WIDTH", "1280")))
+CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "720")))
 CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "30"))
 CAMERA_CAPTURE_BUFFER_SIZE = max(0, int(os.getenv("CAMERA_CAPTURE_BUFFER_SIZE", "1")))
 CAMERA_ASYNC_INFERENCE = os.getenv("CAMERA_ASYNC_INFERENCE", "1") == "1"
@@ -376,6 +376,73 @@ def box_iou(a: List[int], b: List[int]) -> float:
     return inter / union
 
 
+def _box_area(box: List[int]) -> int:
+    x1, y1, x2, y2 = box
+    return max(0, x2 - x1) * max(0, y2 - y1)
+
+
+def _box_intersection(a: List[int], b: List[int]) -> int:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    return max(0, ix2 - ix1) * max(0, iy2 - iy1)
+
+
+def _box_overlap_min_ratio(a: List[int], b: List[int]) -> float:
+    inter = _box_intersection(a, b)
+    if inter <= 0:
+        return 0.0
+    amin = min(_box_area(a), _box_area(b))
+    if amin <= 0:
+        return 0.0
+    return inter / float(amin)
+
+
+def deduplicate_detections(
+    items: List[dict],
+    *,
+    iou_thresh: float = 0.45,
+    overlap_min_thresh: float = 0.75,
+) -> tuple[List[dict], int]:
+    """
+    Remove overlapping duplicate detections of the same class.
+    Keep the highest-confidence item when two boxes are near-identical/contained.
+    """
+    if not items:
+        return items, 0
+
+    ordered = sorted(items, key=lambda x: float(x.get("det_confidence", 0.0)), reverse=True)
+    kept: List[dict] = []
+    removed = 0
+
+    for cand in ordered:
+        cbox = cand.get("box")
+        clabel = str(cand.get("det_label", ""))
+        if not cbox or len(cbox) != 4:
+            continue
+
+        duplicate = False
+        for k in kept:
+            kbox = k.get("box")
+            if not kbox or len(kbox) != 4:
+                continue
+            if str(k.get("det_label", "")) != clabel:
+                continue
+
+            if box_iou(cbox, kbox) >= iou_thresh or _box_overlap_min_ratio(cbox, kbox) >= overlap_min_thresh:
+                duplicate = True
+                removed += 1
+                break
+
+        if not duplicate:
+            kept.append(cand)
+
+    return kept, removed
+
+
 def attach_quality_from_previous(current: List[dict], previous: List[dict]) -> None:
     if not current or not previous:
         return
@@ -613,6 +680,7 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
     debug_list = []
     filtered_small = 0
     filtered_label = 0
+    filtered_overlap = 0
     if len(res.boxes):
         sorted_idx = np.argsort(res.boxes.conf.cpu().numpy())[::-1]
         W, H = img.size
@@ -663,6 +731,7 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
                 }
             )
 
+    outputs, filtered_overlap = deduplicate_detections(outputs, iou_thresh=0.45, overlap_min_thresh=0.75)
     max_conf = float(res.boxes.conf.max().item()) if len(res.boxes.conf) else 0.0
     dbg = [
         {
@@ -674,6 +743,7 @@ def detect_and_crop(img: Image.Image, imgsz: int = 640, conf: float | None = Non
             "boxes_kept": len(outputs),
             "filtered_small": filtered_small,
             "filtered_label": filtered_label,
+            "filtered_overlap": filtered_overlap,
             "tops": debug_list,
         }
     ]
