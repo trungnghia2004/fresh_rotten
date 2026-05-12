@@ -6,9 +6,9 @@ from sklearn.model_selection import train_test_split
 INPUT_ROOT = r"C:\Users\ADMIN\Downloads\Train"
 OUTPUT_ROOT = r"C:\Users\ADMIN\Downloads\group23_22001611_22001624_split"
 
-TRAIN_RATIO = 0.8
-VAL_RATIO = 0.1
-TEST_RATIO = 0.1
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
 
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".bmp")
 

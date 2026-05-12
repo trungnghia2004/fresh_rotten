@@ -29,13 +29,17 @@ let browserCamBusy = false;
 const CAMERA_TARGET_FPS = 30;
 const BROWSER_CAM_INTERVAL_MS = Math.max(20, Math.round(1000 / CAMERA_TARGET_FPS));
 const REMOTE_SEND_ASPECT = 16 / 9;
-const REMOTE_SEND_WIDTH = 960;
-const REMOTE_SEND_HEIGHT = 540;
-const REMOTE_SEND_JPEG_QUALITY = 0.7;
-const REMOTE_YOLO_IMGSZ = 448;
+const REMOTE_SEND_WIDTH = 720;
+const REMOTE_SEND_HEIGHT = 405;
+const REMOTE_SEND_JPEG_QUALITY = 0.66;
+const REMOTE_YOLO_IMGSZ = 384;
 const REMOTE_HFLIP = true;
-const CAM_DET_HOLD_MS = 450;
-const CAM_DET_SMOOTH_ALPHA = 0.35;
+const REMOTE_LITE_MAX_BOXES = 10;
+const REMOTE_LITE_CONF = 0.45;
+const CAM_DET_HOLD_MS = 700;
+const CAM_DET_SMOOTH_ALPHA = 0.22;
+const CAM_DET_DEDUP_IOU = 0.65;
+const CAM_DET_MIN_AREA = 900;
 
 let camLastDetections = [];
 let camLastFrameSize = null;
@@ -65,23 +69,38 @@ function stabilizeCameraDetections(current, previous) {
   if (!Array.isArray(current) || current.length === 0) return [];
   if (!Array.isArray(previous) || previous.length === 0) return current;
 
-  return current.map((cur) => {
+  const usedPrev = new Set();
+  const sortedCur = [...current].sort((a, b) => Number(b?.confidence || 0) - Number(a?.confidence || 0));
+  const out = [];
+
+  for (const cur of sortedCur) {
     const curBox = cur?.box;
-    if (!Array.isArray(curBox) || curBox.length !== 4) return cur;
-    let best = null;
+    if (!Array.isArray(curBox) || curBox.length !== 4) {
+      out.push(cur);
+      continue;
+    }
+
+    let bestIdx = -1;
     let bestIou = 0;
-    for (const prev of previous) {
+    for (let i = 0; i < previous.length; i++) {
+      if (usedPrev.has(i)) continue;
+      const prev = previous[i];
       const prevBox = prev?.box;
       if (!Array.isArray(prevBox) || prevBox.length !== 4) continue;
-      if ((prev?.fruit || "") !== (cur?.fruit || "")) continue;
       const iou = boxIou(curBox, prevBox);
       if (iou > bestIou) {
         bestIou = iou;
-        best = prev;
+        bestIdx = i;
       }
     }
-    if (!best || bestIou < 0.2) return cur;
 
+    if (bestIdx < 0 || bestIou < 0.2) {
+      out.push(cur);
+      continue;
+    }
+
+    usedPrev.add(bestIdx);
+    const best = previous[bestIdx];
     const p = best.box;
     const c = cur.box;
     const a = CAM_DET_SMOOTH_ALPHA;
@@ -92,8 +111,31 @@ function stabilizeCameraDetections(current, previous) {
       Math.round(p[3] * (1 - a) + c[3] * a),
     ];
     const quality = cur?.quality && cur.quality !== "unknown" ? cur.quality : (best?.quality || "unknown");
-    return { ...cur, box: smoothedBox, quality };
-  });
+    out.push({ ...cur, box: smoothedBox, quality });
+  }
+
+  return out;
+}
+
+function dedupeDetections(detections, iouThreshold = CAM_DET_DEDUP_IOU) {
+  if (!Array.isArray(detections) || detections.length <= 1) return detections || [];
+  const sorted = [...detections].sort((a, b) => Number(b?.confidence || 0) - Number(a?.confidence || 0));
+  const kept = [];
+  for (const d of sorted) {
+    const box = d?.box;
+    if (!Array.isArray(box) || box.length !== 4) continue;
+    const area = Math.max(0, box[2] - box[0]) * Math.max(0, box[3] - box[1]);
+    if (area < CAM_DET_MIN_AREA) continue;
+    let isDup = false;
+    for (const k of kept) {
+      if (boxIou(box, k.box) >= iouThreshold) {
+        isDup = true;
+        break;
+      }
+    }
+    if (!isDup) kept.push(d);
+  }
+  return kept;
 }
 
 function setText(el, value) {
@@ -226,9 +268,8 @@ function drawOverlayDetections(detections = [], frameSize = null, mirror = false
     const w = Math.max(1, x2 - x1);
     const h = Math.max(1, y2 - y1);
 
-    const fruit = String(d?.fruit || "unknown");
     const quality = String(d?.quality || "unknown");
-    const label = `${fruit}_${quality}`;
+    const label = (quality === "fresh" || quality === "rotten") ? quality : "unknown";
 
     ctx.strokeStyle = "#00e05a";
     ctx.fillStyle = "rgba(0,0,0,0.72)";
@@ -415,6 +456,8 @@ async function predictFrameBlob(blob, imgsz) {
   fd.append("allow_no_detection", "1");
   fd.append("lite", "1");
   fd.append("lite_render", "0");
+  fd.append("lite_max_boxes", String(REMOTE_LITE_MAX_BOXES));
+  fd.append("lite_conf", String(REMOTE_LITE_CONF));
   fd.append("imgsz", String(imgsz));
   const res = await fetch("/predict_image", { method: "POST", body: fd });
   return parseJsonResponse(res);
@@ -512,7 +555,8 @@ async function startBrowserCameraLoop() {
       const data = await predictFrameBlob(blob, REMOTE_YOLO_IMGSZ);
       if (isRemote) {
         const now = Date.now();
-        const incoming = Array.isArray(data.detections) ? data.detections : [];
+        const incomingRaw = Array.isArray(data.detections) ? data.detections : [];
+        const incoming = dedupeDetections(incomingRaw);
         if (incoming.length > 0) {
           const stable = stabilizeCameraDetections(incoming, camLastDetections);
           camLastDetections = stable;

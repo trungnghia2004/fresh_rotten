@@ -67,8 +67,8 @@ STREAM_CLASSIFY_MAX_BOXES = max(1, int(os.getenv("STREAM_CLASSIFY_MAX_BOXES", "1
 ANNOTATION_FONT_SIZE = max(10, int(os.getenv("ANNOTATION_FONT_SIZE", "18")))
 ANNOTATION_MAX_WIDTH = max(0, int(os.getenv("ANNOTATION_MAX_WIDTH", "960")))
 CAMERA_STREAM_TARGET_FPS = float(os.getenv("CAMERA_STREAM_TARGET_FPS", "60"))
-CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "1")))
-CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "1")))
+CAMERA_STREAM_DETECT_EVERY = max(1, int(os.getenv("CAMERA_STREAM_DETECT_EVERY", "10")))
+CAMERA_STREAM_CLASSIFY_EVERY = max(1, int(os.getenv("CAMERA_STREAM_CLASSIFY_EVERY", "10")))
 CAMERA_STREAM_JPEG_QUALITY = int(os.getenv("CAMERA_STREAM_JPEG_QUALITY", "88"))
 CAMERA_STREAM_YOLO_IMGSZ = max(320, int(os.getenv("CAMERA_STREAM_YOLO_IMGSZ", "640")))
 CAMERA_STREAM_OUTPUT_MAX_WIDTH = max(0, int(os.getenv("CAMERA_STREAM_OUTPUT_MAX_WIDTH", "960")))
@@ -79,7 +79,7 @@ CAMERA_CAPTURE_HEIGHT = max(0, int(os.getenv("CAMERA_CAPTURE_HEIGHT", "720")))
 CAMERA_CAPTURE_FPS = float(os.getenv("CAMERA_CAPTURE_FPS", "60"))
 CAMERA_CAPTURE_BUFFER_SIZE = max(0, int(os.getenv("CAMERA_CAPTURE_BUFFER_SIZE", "1")))
 CAMERA_ASYNC_INFERENCE = os.getenv("CAMERA_ASYNC_INFERENCE", "1") == "1"
-CAMERA_LITE_MAX_BOXES = max(1, int(os.getenv("CAMERA_LITE_MAX_BOXES", "2")))
+CAMERA_LITE_MAX_BOXES = max(1, int(os.getenv("CAMERA_LITE_MAX_BOXES", "8")))
 CAMERA_LITE_RENDER_MAX_WIDTH = max(320, int(os.getenv("CAMERA_LITE_RENDER_MAX_WIDTH", "720")))
 
 MODEL_PATHS = {
@@ -887,6 +887,8 @@ async def predict_image(
     imgsz: int | None = Form(None),
     lite: str | None = Form(None),
     lite_render: str | None = Form(None),
+    lite_max_boxes: int | None = Form(None),
+    lite_conf: float | None = Form(None),
 ):
     if not file.content_type or not file.content_type.startswith("image/"):
         return JSONResponse({"error": "Please upload an image."}, status_code=400)
@@ -900,6 +902,12 @@ async def predict_image(
         lite_mode = (lite or "").strip() == "1"
         lite_render_mode = (lite_render or "").strip() == "1"
         render_model_names = [selected] if selected else list(_models.keys())
+        req_lite_conf = None
+        if lite_conf is not None:
+            req_lite_conf = max(0.05, min(0.95, float(lite_conf)))
+        req_lite_max_boxes = CAMERA_LITE_MAX_BOXES
+        if lite_max_boxes is not None:
+            req_lite_max_boxes = max(1, min(30, int(lite_max_boxes)))
         req_imgsz = 640
         if imgsz is not None:
             req_imgsz = max(320, min(960, int(imgsz)))
@@ -909,7 +917,13 @@ async def predict_image(
         if _detector is None:
             return JSONResponse({"error": "YOLO detector not loaded. Ensure ultralytics installed and model path exists."}, status_code=500)
 
-        det_list, max_conf, dbg = detect_and_crop(img, imgsz=req_imgsz, collect_debug=not lite_mode)
+        det_conf = req_lite_conf if (lite_mode and req_lite_conf is not None) else None
+        det_list, max_conf, dbg = detect_and_crop(
+            img,
+            imgsz=req_imgsz,
+            conf=det_conf,
+            collect_debug=not lite_mode,
+        )
         if not det_list:
             if (allow_no_detection or "").strip() == "1":
                 raw_img = pil_to_data_url(img) if (not lite_mode or lite_render_mode) else ""
@@ -929,11 +943,12 @@ async def predict_image(
                 return payload
             return JSONResponse({"error": f"No fruits detected by YOLO. max_conf={max_conf:.3f}", "debug": dbg}, status_code=400)
 
-        filtered = [d for d in det_list if d["det_confidence"] >= DETECT_CONF]
+        conf_floor = req_lite_conf if (lite_mode and req_lite_conf is not None) else DETECT_CONF
+        filtered = [d for d in det_list if d["det_confidence"] >= conf_floor]
         if not filtered:
             filtered = det_list
         if lite_mode:
-            filtered = filtered[:CAMERA_LITE_MAX_BOXES]
+            filtered = filtered[:req_lite_max_boxes]
 
         detections = []
         fruit_counts = {}
