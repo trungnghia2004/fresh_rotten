@@ -27,22 +27,33 @@ let browserCamBusy = false;
 const CAMERA_TARGET_FPS = 30;
 const BROWSER_CAM_INTERVAL_MS = Math.max(20, Math.round(1000 / CAMERA_TARGET_FPS));
 const REMOTE_SEND_ASPECT = 16 / 9;
-const REMOTE_SEND_WIDTH = 720;
-const REMOTE_SEND_HEIGHT = 405;
-const REMOTE_SEND_JPEG_QUALITY = 0.66;
+const REMOTE_SEND_WIDTH = 640;
+const REMOTE_SEND_HEIGHT = 360;
+const REMOTE_SEND_JPEG_QUALITY = 0.62;
 const REMOTE_YOLO_IMGSZ = 384;
-const REMOTE_HFLIP = true;
-const REMOTE_LITE_MAX_BOXES = 10;
-const REMOTE_LITE_CONF = 0.45;
-const CAM_DET_HOLD_MS = 700;
-const CAM_DET_SMOOTH_ALPHA = 0.22;
+const REMOTE_HFLIP = false;
+const REMOTE_LITE_MAX_BOXES = 12;
+const REMOTE_LITE_CONF = 0.40;
+const CAM_DET_HOLD_MS = 160;
+const CAM_DET_SMOOTH_ALPHA = 0.82;
 const CAM_DET_DEDUP_IOU = 0.65;
-const CAM_DET_MIN_AREA = 900;
+const CAM_DET_MIN_AREA = 700;
+const CAM_TRACK_MAX_CENTER_DIST = 160;
+const CAM_TRACK_MISS_MAX = 4;
+const CAM_TRACK_VELOCITY_DECAY = 0.82;
+const CAM_TRACK_MIN_SCORE = 0.16;
+const CAM_DETECT_INTERVAL_MS = 90;
+const CAM_CLASSIFY_EVERY = 3;
 
 let camLastDetections = [];
 let camLastFrameSize = null;
 let camLastCaptureMeta = null;
 let camLastDetectionTs = 0;
+let camLastApiRequestTs = 0;
+let camDetectSeq = 0;
+let camTracks = [];
+let camNextTrackId = 1;
+let camRenderRaf = 0;
 const IS_LOCAL_HOST = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 function boxIou(a, b) {
@@ -63,56 +74,191 @@ function boxIou(a, b) {
   return union > 0 ? inter / union : 0;
 }
 
-function stabilizeCameraDetections(current, previous) {
-  if (!Array.isArray(current) || current.length === 0) return [];
-  if (!Array.isArray(previous) || previous.length === 0) return current;
+function boxCenter(box) {
+  return [
+    (Number(box?.[0] || 0) + Number(box?.[2] || 0)) / 2,
+    (Number(box?.[1] || 0) + Number(box?.[3] || 0)) / 2,
+  ];
+}
 
-  const usedPrev = new Set();
-  const sortedCur = [...current].sort((a, b) => Number(b?.confidence || 0) - Number(a?.confidence || 0));
+function centerDistance(a, b) {
+  const [ax, ay] = boxCenter(a);
+  const [bx, by] = boxCenter(b);
+  return Math.hypot(ax - bx, ay - by);
+}
+
+function shiftBox(box, dx, dy) {
+  if (!Array.isArray(box) || box.length !== 4) return [0, 0, 0, 0];
+  return [
+    Math.round(Number(box[0]) + dx),
+    Math.round(Number(box[1]) + dy),
+    Math.round(Number(box[2]) + dx),
+    Math.round(Number(box[3]) + dy),
+  ];
+}
+
+function smoothBox(prevBox, nextBox, alpha) {
+  return [
+    Math.round(prevBox[0] * (1 - alpha) + nextBox[0] * alpha),
+    Math.round(prevBox[1] * (1 - alpha) + nextBox[1] * alpha),
+    Math.round(prevBox[2] * (1 - alpha) + nextBox[2] * alpha),
+    Math.round(prevBox[3] * (1 - alpha) + nextBox[3] * alpha),
+  ];
+}
+
+function predictTrackBox(track, nowTs = performance.now()) {
+  const lastUpdateTs = Number(track?.lastUpdateTs || nowTs);
+  const elapsed = Math.max(0, Math.min(180, nowTs - lastUpdateTs));
+  const vx = Number(track?.vx || 0);
+  const vy = Number(track?.vy || 0);
+  return shiftBox(track?.box || [0, 0, 0, 0], vx * elapsed, vy * elapsed);
+}
+
+function trackingScore(cur, track, nowTs = performance.now()) {
+  const curBox = cur?.box;
+  const prevBox = predictTrackBox(track, nowTs);
+  if (!Array.isArray(curBox) || !Array.isArray(prevBox) || curBox.length !== 4 || prevBox.length !== 4) return -Infinity;
+
+  const iou = boxIou(curBox, prevBox);
+  const dist = centerDistance(curBox, prevBox);
+  const distNorm = Math.max(0, 1 - dist / CAM_TRACK_MAX_CENTER_DIST);
+  const sameFruit = cur?.fruit && track?.fruit && cur.fruit === track.fruit;
+  const sameQuality = cur?.quality && track?.quality && cur.quality === track.quality;
+
+  return iou * 0.65 + distNorm * 0.3 + (sameFruit ? 0.08 : 0) + (sameQuality ? 0.03 : 0);
+}
+
+function toCameraTrack(det, nowTs = performance.now()) {
+  return {
+    id: camNextTrackId++,
+    fruit: det?.fruit || "unknown",
+    quality: det?.quality || "unknown",
+    confidence: Number(det?.confidence || 0),
+    box: det?.box || [0, 0, 0, 0],
+    vx: 0,
+    vy: 0,
+    missCount: 0,
+    lastUpdateTs: nowTs,
+  };
+}
+
+function trackToDetection(track, nowTs = performance.now()) {
+  return {
+    box: predictTrackBox(track, nowTs),
+    fruit: track.fruit,
+    quality: track.quality,
+    confidence: track.confidence,
+    trackId: track.id,
+    missCount: track.missCount,
+  };
+}
+
+function getRenderableCameraDetections(nowTs = performance.now()) {
+  return camTracks
+    .map((track) => trackToDetection(track, nowTs))
+    .sort((a, b) => Number(a?.box?.[0] || 0) - Number(b?.box?.[0] || 0));
+}
+
+function updateCameraTracks(currentDetections, previousTracks, nowTs = performance.now()) {
+  const current = Array.isArray(currentDetections) ? currentDetections : [];
+  const previous = Array.isArray(previousTracks) ? previousTracks : [];
+  if (current.length === 0) {
+    return previous
+      .map((track) => {
+        const missCount = Number(track?.missCount || 0) + 1;
+        if (missCount > CAM_TRACK_MISS_MAX) return null;
+        const nextBox = predictTrackBox(track, nowTs);
+        return {
+          ...track,
+          box: nextBox,
+          vx: Number(track?.vx || 0) * CAM_TRACK_VELOCITY_DECAY,
+          vy: Number(track?.vy || 0) * CAM_TRACK_VELOCITY_DECAY,
+          missCount,
+          lastUpdateTs: nowTs,
+          confidence: Math.max(0, Number(track?.confidence || 0) * 0.94),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => Number(a?.box?.[0] || 0) - Number(b?.box?.[0] || 0));
+  }
+
+  if (previous.length === 0) {
+    return [...current]
+      .sort((a, b) => Number(a?.box?.[0] || 0) - Number(b?.box?.[0] || 0))
+      .map((det) => toCameraTrack(det, nowTs));
+  }
+
+  const usedTracks = new Set();
+  const sortedCur = [...current].sort((a, b) => Number(a?.box?.[0] || 0) - Number(b?.box?.[0] || 0));
   const out = [];
 
   for (const cur of sortedCur) {
     const curBox = cur?.box;
     if (!Array.isArray(curBox) || curBox.length !== 4) {
-      out.push(cur);
+      out.push(toCameraTrack(cur, nowTs));
       continue;
     }
 
     let bestIdx = -1;
-    let bestIou = 0;
+    let bestScore = -Infinity;
     for (let i = 0; i < previous.length; i++) {
-      if (usedPrev.has(i)) continue;
-      const prev = previous[i];
-      const prevBox = prev?.box;
-      if (!Array.isArray(prevBox) || prevBox.length !== 4) continue;
-      const iou = boxIou(curBox, prevBox);
-      if (iou > bestIou) {
-        bestIou = iou;
+      if (usedTracks.has(i)) continue;
+      const track = previous[i];
+      const score = trackingScore(cur, track, nowTs);
+      if (score > bestScore) {
+        bestScore = score;
         bestIdx = i;
       }
     }
 
-    if (bestIdx < 0 || bestIou < 0.2) {
-      out.push(cur);
+    if (bestIdx < 0 || bestScore < CAM_TRACK_MIN_SCORE) {
+      out.push(toCameraTrack(cur, nowTs));
       continue;
     }
 
-    usedPrev.add(bestIdx);
+    usedTracks.add(bestIdx);
     const best = previous[bestIdx];
-    const p = best.box;
-    const c = cur.box;
-    const a = CAM_DET_SMOOTH_ALPHA;
-    const smoothedBox = [
-      Math.round(p[0] * (1 - a) + c[0] * a),
-      Math.round(p[1] * (1 - a) + c[1] * a),
-      Math.round(p[2] * (1 - a) + c[2] * a),
-      Math.round(p[3] * (1 - a) + c[3] * a),
-    ];
+    const predictedBox = predictTrackBox(best, nowTs);
+    const dist = centerDistance(cur.box, predictedBox);
+    const alpha = dist > 90 ? 0.94 : CAM_DET_SMOOTH_ALPHA;
+    const smoothedBox = smoothBox(predictedBox, cur.box, alpha);
     const quality = cur?.quality && cur.quality !== "unknown" ? cur.quality : (best?.quality || "unknown");
-    out.push({ ...cur, box: smoothedBox, quality });
+    const fruit = cur?.fruit || best?.fruit || "unknown";
+    const [px, py] = boxCenter(best.box);
+    const [nx, ny] = boxCenter(smoothedBox);
+    const dt = Math.max(16, nowTs - Number(best?.lastUpdateTs || (nowTs - 16)));
+    const vx = (nx - px) / dt;
+    const vy = (ny - py) / dt;
+    out.push({
+      ...best,
+      fruit,
+      quality,
+      confidence: Number(cur?.confidence || best?.confidence || 0),
+      box: smoothedBox,
+      vx: Number(best?.vx || 0) * 0.25 + vx * 0.75,
+      vy: Number(best?.vy || 0) * 0.25 + vy * 0.75,
+      missCount: 0,
+      lastUpdateTs: nowTs,
+    });
   }
 
-  return out;
+  for (let i = 0; i < previous.length; i++) {
+    if (usedTracks.has(i)) continue;
+    const prev = previous[i];
+    const missCount = Number(prev?.missCount || 0) + 1;
+    if (missCount > CAM_TRACK_MISS_MAX) continue;
+    out.push({
+      ...prev,
+      box: predictTrackBox(prev, nowTs),
+      vx: Number(prev?.vx || 0) * CAM_TRACK_VELOCITY_DECAY,
+      vy: Number(prev?.vy || 0) * CAM_TRACK_VELOCITY_DECAY,
+      missCount,
+      lastUpdateTs: nowTs,
+      confidence: Math.max(0, Number(prev?.confidence || 0) * 0.94),
+    });
+  }
+
+  return out.sort((a, b) => Number(a?.box?.[0] || 0) - Number(b?.box?.[0] || 0));
 }
 
 function dedupeDetections(detections, iouThreshold = CAM_DET_DEDUP_IOU) {
@@ -191,6 +337,29 @@ function clearOverlay() {
 function hideOverlay() {
   clearOverlay();
   outputCamOverlay?.classList.add("hidden");
+}
+
+function renderCameraOverlayFrame(nowTs = performance.now()) {
+  if (!browserCamStream || getMode() !== "camera" || !outputCamVideo || outputCamVideo.classList.contains("hidden")) {
+    camRenderRaf = 0;
+    return;
+  }
+
+  const detections = getRenderableCameraDetections(nowTs);
+  camLastDetections = detections;
+  drawOverlayDetections(
+    detections,
+    camLastFrameSize || null,
+    REMOTE_HFLIP,
+    camLastCaptureMeta || null,
+  );
+  camRenderRaf = requestAnimationFrame(renderCameraOverlayFrame);
+}
+
+function ensureCameraOverlayLoop() {
+  if (!camRenderRaf) {
+    camRenderRaf = requestAnimationFrame(renderCameraOverlayFrame);
+  }
 }
 
 function drawOverlayDetections(detections = [], frameSize = null, mirror = false, captureMeta = null) {
@@ -301,6 +470,10 @@ function stopBrowserCameraLoop() {
     clearInterval(browserCamTimer);
     browserCamTimer = null;
   }
+  if (camRenderRaf) {
+    cancelAnimationFrame(camRenderRaf);
+    camRenderRaf = 0;
+  }
   if (browserCamStream) {
     const tracks = browserCamStream.getTracks?.() || [];
     tracks.forEach((t) => t.stop());
@@ -322,9 +495,13 @@ function resetAll() {
   latestModels = { cnn: null };
   latestAnnotatedImages = { cnn: null };
   camLastDetections = [];
+  camTracks = [];
+  camNextTrackId = 1;
   camLastFrameSize = null;
   camLastCaptureMeta = null;
   camLastDetectionTs = 0;
+  camLastApiRequestTs = 0;
+  camDetectSeq = 0;
 }
 
 function syncInputByMode() {
@@ -443,7 +620,7 @@ async function postFile(url, file, selectedModel = null) {
   return parseJsonResponse(res);
 }
 
-async function predictFrameBlob(blob, imgsz) {
+async function predictFrameBlob(blob, imgsz, classify = true) {
   const fd = new FormData();
   fd.append("file", blob, "frame.jpg");
   fd.append("selected_model", "cnn");
@@ -453,6 +630,7 @@ async function predictFrameBlob(blob, imgsz) {
   fd.append("lite_max_boxes", String(REMOTE_LITE_MAX_BOXES));
   fd.append("lite_conf", String(REMOTE_LITE_CONF));
   fd.append("imgsz", String(imgsz));
+  fd.append("classify", classify ? "1" : "0");
   const res = await fetch("/predict_image", { method: "POST", body: fd });
   return parseJsonResponse(res);
 }
@@ -478,6 +656,7 @@ async function startBrowserCameraLoop() {
   showLiveVideo(inputVideo, browserCamStream, isRemote && REMOTE_HFLIP);
   if (isRemote) {
     showLiveVideo(outputCamVideo, browserCamStream, REMOTE_HFLIP);
+    ensureCameraOverlayLoop();
     hideMedia(outputImage);
     hideMedia(outputVideo);
     hideMedia(outputStream);
@@ -521,19 +700,29 @@ async function startBrowserCameraLoop() {
       }
     }
 
+    const captureMeta = {
+      srcW,
+      srcH,
+      sx,
+      sy,
+      sw,
+      sh,
+      fw: w,
+      fh: h,
+    };
+
+    if (isRemote) {
+      camLastCaptureMeta = captureMeta;
+      camLastFrameSize = camLastFrameSize || { width: w, height: h };
+      const loopNow = performance.now();
+      if (loopNow - camLastApiRequestTs < CAM_DETECT_INTERVAL_MS) {
+        return;
+      }
+      camLastApiRequestTs = loopNow;
+    }
+
     browserCamBusy = true;
     try {
-      const captureMeta = {
-        srcW,
-        srcH,
-        sx,
-        sy,
-        sw,
-        sh,
-        fw: w,
-        fh: h,
-      };
-
       canvas.width = w;
       canvas.height = h;
 
@@ -544,31 +733,31 @@ async function startBrowserCameraLoop() {
       const blob = await new Promise((resolve) =>
         canvas.toBlob(resolve, "image/jpeg", isRemote ? REMOTE_SEND_JPEG_QUALITY : 0.85),
       );
-      if (!blob) throw new Error("Kh\u00f4ng \u0111\u1ecdc \u0111\u01b0\u1ee3c frame camera.");
+      if (!blob) throw new Error("Kh?ng ??c ???c frame camera.");
 
-      const data = await predictFrameBlob(blob, REMOTE_YOLO_IMGSZ);
+      const shouldClassify = !isRemote || camTracks.length === 0 || (camDetectSeq % CAM_CLASSIFY_EVERY === 0);
+      camDetectSeq += 1;
+      const data = await predictFrameBlob(blob, REMOTE_YOLO_IMGSZ, shouldClassify);
       if (isRemote) {
-        const now = Date.now();
+        const now = performance.now();
         const incomingRaw = Array.isArray(data.detections) ? data.detections : [];
         const incoming = dedupeDetections(incomingRaw);
         if (incoming.length > 0) {
-          const stable = stabilizeCameraDetections(incoming, camLastDetections);
-          camLastDetections = stable;
+          camTracks = updateCameraTracks(incoming, camTracks, now);
+          camLastDetections = getRenderableCameraDetections(now);
           camLastFrameSize = data.frame_size || camLastFrameSize || { width: w, height: h };
           camLastCaptureMeta = captureMeta;
           camLastDetectionTs = now;
-        } else if (now - camLastDetectionTs > CAM_DET_HOLD_MS) {
-          camLastDetections = [];
+        } else {
+          camTracks = updateCameraTracks([], camTracks, now);
+          camLastDetections = getRenderableCameraDetections(now);
+          if (camTracks.length === 0 && now - camLastDetectionTs > CAM_DET_HOLD_MS) {
+            camLastDetections = [];
+          }
           camLastFrameSize = data.frame_size || camLastFrameSize;
           camLastCaptureMeta = captureMeta;
         }
 
-        drawOverlayDetections(
-          camLastDetections,
-          camLastFrameSize || data.frame_size || null,
-          REMOTE_HFLIP,
-          camLastCaptureMeta || captureMeta,
-        );
       } else if (data.annotated_image) {
         showMedia(outputImage, data.annotated_image);
         hideMedia(outputVideo);
@@ -735,3 +924,4 @@ rawCamBtn?.addEventListener("click", () => {
 });
 
 syncInputByMode();
+

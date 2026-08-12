@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import json
@@ -888,6 +888,7 @@ async def predict_image(
     lite_render: str | None = Form(None),
     lite_max_boxes: int | None = Form(None),
     lite_conf: float | None = Form(None),
+    classify: str | None = Form(None),
 ):
     if not file.content_type or not file.content_type.startswith("image/"):
         return JSONResponse({"error": "Please upload an image."}, status_code=400)
@@ -900,6 +901,7 @@ async def predict_image(
 
         lite_mode = (lite or "").strip() == "1"
         lite_render_mode = (lite_render or "").strip() == "1"
+        lite_classify = (classify or "1").strip() != "0"
         render_model_names = [selected] if selected else list(_models.keys())
         req_lite_conf = None
         if lite_conf is not None:
@@ -954,10 +956,12 @@ async def predict_image(
         crop_count = len(filtered)
         total_qc_by_model = {name: {"fresh": 0, "rotten": 0} for name in render_model_names}
 
-        crops = [d["crop"] for d in filtered]
-        arr_batch = preprocess_batch(crops)
         model_names = [selected] if selected else None
-        models_batch = predict_models_batch(arr_batch, model_names=model_names)
+        models_batch = [{} for _ in filtered]
+        if (not lite_mode) or lite_classify:
+            crops = [d["crop"] for d in filtered]
+            arr_batch = preprocess_batch(crops)
+            models_batch = predict_models_batch(arr_batch, model_names=model_names)
 
         for det, models in zip(filtered, models_batch):
             fruit = det["det_label"]
@@ -969,8 +973,8 @@ async def predict_image(
                 quality = model_result.get("quality")
                 if model_name in total_qc_by_model and quality in total_qc_by_model[model_name]:
                     total_qc_by_model[model_name][quality] += 1
-            agg_model = models.get("cnn") or next(iter(models.values()))
-            quality = agg_model["quality"]
+            agg_model = models.get("cnn") or next(iter(models.values()), None)
+            quality = agg_model.get("quality") if agg_model else "unknown"
             fc = fruit_counts.setdefault(fruit, {"total": 0, "fresh": 0, "rotten": 0})
             fc["total"] += 1
             if quality in fc:
