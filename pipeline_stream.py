@@ -181,7 +181,7 @@ def _stream_capture_frames(
         if detect_enabled:
             try:
                 load_assets()
-                classify_enabled = "mobilenet" in models_ref
+                classify_enabled = "cnn" in models_ref
             except Exception:
                 classify_enabled = False
 
@@ -238,7 +238,7 @@ def _stream_capture_frames(
                         classify_items = filtered[: cfg.stream_classify_max_boxes]
                         crops = [d["crop"] for d in classify_items]
                         arr_batch = preprocess_batch(crops)
-                        models_batch = predict_models_batch(arr_batch, model_names=["mobilenet"])
+                        models_batch = predict_models_batch(arr_batch, model_names=["cnn"])
                         for i, (det, models) in enumerate(zip(classify_items, models_batch)):
                             if not models:
                                 continue

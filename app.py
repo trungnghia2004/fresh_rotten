@@ -43,7 +43,7 @@ IMAGE_SIZE: Tuple[int, int] = (224, 224)
 TRAIN_DIR = Path(os.getenv("TRAIN_DIR", BASE_DIR / "train"))
 CLASS_NAMES_FILE = Path(os.getenv("CLASS_NAMES_FILE", BASE_DIR / "class_names.json"))
 ALLOWED_QUALITIES = {"fresh", "rotten"}
-DETECT_MODEL = Path(r"F:\group23_22001611_22001624\weights\yolo_fruits_and_vegetables_v3.pt")
+DETECT_MODEL = Path(r"F:\fresh_rotten\weights\yolo_fruits_and_vegetables_v3.pt")
 
 DETECT_CONF = float(os.getenv("DETECT_CONF", "0.70"))
 DETECT_IOU = float(os.getenv("DETECT_IOU", "0.2"))
@@ -84,7 +84,6 @@ CAMERA_LITE_RENDER_MAX_WIDTH = max(320, int(os.getenv("CAMERA_LITE_RENDER_MAX_WI
 
 MODEL_PATHS = {
     "cnn": BASE_DIR / "weights/cnn_best.keras",
-    "mobilenet": BASE_DIR / "weights/mobilenet_fruit_quality.keras",
 }
 FALLBACK_FRUITS = [x.strip() for x in os.getenv("FRUIT_NAMES", "").split(",") if x.strip()]
 
@@ -213,7 +212,7 @@ def load_assets() -> None:
                 )
 
         if not _models:
-            raise RuntimeError("No model found. Need cnn_best.keras or mobilenet_fruit_quality.keras")
+            raise RuntimeError("No model found. Need cnn_best.keras")
 
     if _detector is None and YOLO and DETECT_MODEL.exists():
         _detector = YOLO(str(DETECT_MODEL))
@@ -366,7 +365,7 @@ def pil_to_data_url(img: Image.Image, fmt: str = "PNG", quality: int = 85) -> st
 def render_annotated(
     image: Image.Image,
     detections: List[dict],
-    model_name: str = "mobilenet",
+    model_name: str = "cnn",
     fmt: str = "PNG",
     quality: int = 85,
     max_width: int | None = None,
@@ -412,7 +411,7 @@ def resize_pil_for_annotation(image: Image.Image, detections: List[dict], max_wi
     return resized, scale_detections(detections, scale, scale)
 
 
-def annotate_pil(image: Image.Image, detections: List[dict], model_name: str = "mobilenet") -> Image.Image:
+def annotate_pil(image: Image.Image, detections: List[dict], model_name: str = "cnn") -> Image.Image:
     """Vẽ box + nhãn fruit_quality lên ảnh, trả về ảnh PIL."""
     img = image.convert("RGB").copy()
     if not detections:
@@ -455,8 +454,8 @@ def annotate_cv2(frame_bgr: np.ndarray, detections: List[dict]) -> np.ndarray:
         fruit = det["detection"]["label"]
         quality = None
         if det.get("models"):
-            if "mobilenet" in det["models"]:
-                quality = det["models"]["mobilenet"].get("quality")
+            if "cnn" in det["models"]:
+                quality = det["models"]["cnn"].get("quality")
             if quality is None and det["models"]:
                 first_model = next(iter(det["models"].values()))
                 quality = first_model.get("quality")
@@ -586,15 +585,15 @@ def attach_quality_from_previous(current: List[dict], previous: List[dict]) -> N
 
         if best is not None and best_iou >= 0.3:
             prev_models = best.get("models") or {}
-            mb = prev_models.get("mobilenet")
-            if mb:
+            cnn = prev_models.get("cnn")
+            if cnn:
                 cur["models"] = {
-                    "mobilenet": {
-                        "fruit": mb.get("fruit", cur_label),
-                        "quality": mb.get("quality", "unknown"),
-                        "confidence": mb.get("confidence", 0.0),
-                        "label": f"{cur_label}_{mb.get('quality', 'unknown')}",
-                        "quality_counts": mb.get("quality_counts", {"fresh": 0, "rotten": 0}),
+                    "cnn": {
+                        "fruit": cnn.get("fruit", cur_label),
+                        "quality": cnn.get("quality", "unknown"),
+                        "confidence": cnn.get("confidence", 0.0),
+                        "label": f"{cur_label}_{cnn.get('quality', 'unknown')}",
+                        "quality_counts": cnn.get("quality_counts", {"fresh": 0, "rotten": 0}),
                     }
                 }
 
@@ -747,7 +746,7 @@ def predict_models_batch(arr_batch: np.ndarray, model_names: List[str] | None = 
         items = list(_models.items())
     if not items:
         return out
-    # chạy song song CNN + MobileNet trên cùng batch crop
+    # chạy song song các model phân loại trên cùng batch crop
     try:
         with ThreadPoolExecutor(max_workers=max(1, min(2, len(items)))) as ex:
             futures = [ex.submit(_predict_one, nm) for nm in items]
@@ -896,8 +895,8 @@ async def predict_image(
     try:
         load_assets()
         selected = (selected_model or "").strip().lower() if selected_model else ""
-        if selected and selected not in _models:
-            return JSONResponse({"error": "selected_model must be 'cnn' or 'mobilenet'."}, status_code=400)
+        if selected and selected != "cnn":
+            return JSONResponse({"error": "selected_model must be 'cnn'."}, status_code=400)
 
         lite_mode = (lite or "").strip() == "1"
         lite_render_mode = (lite_render or "").strip() == "1"
@@ -970,7 +969,7 @@ async def predict_image(
                 quality = model_result.get("quality")
                 if model_name in total_qc_by_model and quality in total_qc_by_model[model_name]:
                     total_qc_by_model[model_name][quality] += 1
-            agg_model = models.get("mobilenet") or next(iter(models.values()))
+            agg_model = models.get("cnn") or next(iter(models.values()))
             quality = agg_model["quality"]
             fc = fruit_counts.setdefault(fruit, {"total": 0, "fresh": 0, "rotten": 0})
             fc["total"] += 1
@@ -1002,8 +1001,8 @@ async def predict_image(
                 picked_model = {}
                 if selected and selected in models:
                     picked_model = models.get(selected, {})
-                elif "mobilenet" in models:
-                    picked_model = models.get("mobilenet", {})
+                elif "cnn" in models:
+                    picked_model = models.get("cnn", {})
                 elif models:
                     picked_model = next(iter(models.values()))
                 lite_detections.append(
@@ -1017,7 +1016,7 @@ async def predict_image(
 
             annotated_image = ""
             if lite_render_mode:
-                render_model = selected or "mobilenet"
+                render_model = selected or "cnn"
                 annotated_image = render_annotated(
                     img,
                     detections,
@@ -1051,7 +1050,7 @@ async def predict_image(
         if selected:
             annotated_image = annotated_images.get(selected, "")
         else:
-            annotated_image = annotated_images.get("mobilenet") or next(iter(annotated_images.values()), "")
+            annotated_image = annotated_images.get("cnn") or next(iter(annotated_images.values()), "")
 
         payload = {
             "mode": "image",
@@ -1145,7 +1144,7 @@ async def predict_video(file: UploadFile = File(...)):
                 crop_count = len(filtered)
                 crops = [d["crop"] for d in filtered]
                 arr_batch = preprocess_batch(crops)
-                models_batch = predict_models_batch(arr_batch, model_names=["mobilenet"])
+                models_batch = predict_models_batch(arr_batch, model_names=["cnn"])
                 for det, models in zip(filtered, models_batch):
                     if not models:
                         continue

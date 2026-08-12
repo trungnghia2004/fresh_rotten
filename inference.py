@@ -151,9 +151,9 @@ def print_prediction(model_name: str, fruit: str, quality: str, confidence: floa
     print(f"    Độ tin cậy: {confidence:.4f}")
 
 
-def existing_models(cnn_path: str | Path, mobilenet_path: str | Path) -> List[Tuple[str, Path]]:
-    paths = [("CNN", Path(cnn_path)), ("MobileNet", Path(mobilenet_path))]
-    return [(name, p) for name, p in paths if p.exists()]
+def existing_models(cnn_path: str | Path) -> List[Tuple[str, Path]]:
+    path = Path(cnn_path)
+    return [("CNN", path)] if path.exists() else []
 
 
 def main() -> None:
@@ -162,11 +162,6 @@ def main() -> None:
     parser.add_argument("--train-dir", default="train", help="Training directory for class order.")
     parser.add_argument("--class-names-file", default="class_names.json", help="JSON list of class names.")
     parser.add_argument("--cnn-model", default="cnn_best.keras", help="Path to CNN model.")
-    parser.add_argument(
-        "--mobilenet-model",
-        default="mobilenet_fruit_quality.keras",
-        help="Path to MobileNet model.",
-    )
     args = parser.parse_args()
 
     class_names = load_class_names_file(args.class_names_file)
@@ -183,9 +178,9 @@ def main() -> None:
     print()
 
     image_array = preprocess_image(args.image)
-    model_entries = existing_models(args.cnn_model, args.mobilenet_model)
+    model_entries = existing_models(args.cnn_model)
     if not model_entries:
-        raise FileNotFoundError("No model found. Check --cnn-model and --mobilenet-model paths.")
+        raise FileNotFoundError("No model found. Check --cnn-model path.")
 
     for model_name, model_path in model_entries:
         bundle = load_model_bundle(model_path, class_names, model_name)

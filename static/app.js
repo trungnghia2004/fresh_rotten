@@ -14,14 +14,12 @@ const outputCamOverlay = document.getElementById("outputCamOverlay");
 
 const outCounts = document.getElementById("outCounts");
 const outResult = document.getElementById("outResult");
-const modelRadios = document.querySelectorAll('input[name="modelPick"]');
-const modelSwitch = document.getElementById("modelSwitch");
 const inputCard = document.getElementById("inputCard");
 
 const defaultCountsText = "t\u01b0\u01a1i 0 / h\u1ecfng 0 (crops 0)";
 let latestMode = "image";
-let latestModels = { cnn: null, mobilenet: null };
-let latestAnnotatedImages = { cnn: null, mobilenet: null };
+let latestModels = { cnn: null };
+let latestAnnotatedImages = { cnn: null };
 
 let browserCamStream = null;
 let browserCamTimer = null;
@@ -289,8 +287,7 @@ function getMode() {
 }
 
 function getPickedModel() {
-  const checked = document.querySelector('input[name="modelPick"]:checked');
-  return checked ? checked.value : null;
+  return "cnn";
 }
 
 function setGlobalResult(text, state = "ok") {
@@ -322,8 +319,8 @@ function resetAll() {
   hideMedia(outputCamVideo);
   hideOverlay();
   setText(outCounts, defaultCountsText);
-  latestModels = { cnn: null, mobilenet: null };
-  latestAnnotatedImages = { cnn: null, mobilenet: null };
+  latestModels = { cnn: null };
+  latestAnnotatedImages = { cnn: null };
   camLastDetections = [];
   camLastFrameSize = null;
   camLastCaptureMeta = null;
@@ -341,16 +338,14 @@ function syncInputByMode() {
     inputCard?.classList.remove("hidden");
     fileInput.classList.remove("hidden");
     fileInput.accept = "image/*";
-    modelSwitch?.classList.remove("hidden");
     outResult?.classList.remove("hidden");
     rawCamBtn?.classList.add("hidden");
-    setText(inputHint, "\u0110ang \u1edf ch\u1ebf \u0111\u1ed9 \u1ea3nh. Ch\u1ecdn CNN ho\u1eb7c MobileNet tr\u01b0\u1edbc khi d\u1ef1 \u0111o\u00e1n.");
-    setGlobalResult("Ch\u01b0a c\u00f3 k\u1ebft qu\u1ea3. H\u00e3y ch\u1ecdn t\u1ec7p, ch\u1ecdn model r\u1ed3i b\u1ea5m D\u1ef1 \u0111o\u00e1n.", "empty");
+    setText(inputHint, "\u0110ang \u1edf ch\u1ebf \u0111\u1ed9 \u1ea3nh. H\u1ec7 th\u1ed1ng ch\u1ec9 d\u00f9ng CNN.");
+    setGlobalResult("Ch\u01b0a c\u00f3 k\u1ebft qu\u1ea3. H\u00e3y ch\u1ecdn t\u1ec7p r\u1ed3i b\u1ea5m D\u1ef1 \u0111o\u00e1n.", "empty");
   } else if (mode === "video") {
     inputCard?.classList.remove("hidden");
     fileInput.classList.remove("hidden");
     fileInput.accept = "video/*";
-    modelSwitch?.classList.add("hidden");
     outResult?.classList.add("hidden");
     rawCamBtn?.classList.add("hidden");
     setText(inputHint, "\u0110ang \u1edf ch\u1ebf \u0111\u1ed9 video.");
@@ -358,7 +353,6 @@ function syncInputByMode() {
   } else {
     inputCard?.classList.add("hidden");
     fileInput.classList.add("hidden");
-    modelSwitch?.classList.add("hidden");
     outResult?.classList.add("hidden");
     if (IS_LOCAL_HOST) {
       rawCamBtn?.classList.remove("hidden");
@@ -452,7 +446,7 @@ async function postFile(url, file, selectedModel = null) {
 async function predictFrameBlob(blob, imgsz) {
   const fd = new FormData();
   fd.append("file", blob, "frame.jpg");
-  fd.append("selected_model", "mobilenet");
+  fd.append("selected_model", "cnn");
   fd.append("allow_no_detection", "1");
   fd.append("lite", "1");
   fd.append("lite_render", "0");
@@ -635,7 +629,6 @@ async function startAutoCameraStream() {
   throw new Error("Kh\u00f4ng truy c\u1eadp \u0111\u01b0\u1ee3c camera tr\u00ean m\u00e1y n\u00e0y. H\u00e3y c\u1ea5p quy\u1ec1n camera cho tr\u00ecnh duy\u1ec7t.");
 }
 
-modelRadios.forEach((el) => el.addEventListener("change", updateCounts));
 document.querySelectorAll('input[name="uploadMode"]').forEach((el) => el.addEventListener("change", syncInputByMode));
 
 fileInput.addEventListener("change", () => {
@@ -683,11 +676,6 @@ predictBtn.addEventListener("click", async () => {
 
   if (mode === "image") {
     const pickedModel = getPickedModel();
-    if (!pickedModel) {
-      setGlobalResult("Vui l\u00f2ng ch\u1ecdn CNN ho\u1eb7c MobileNet tr\u01b0\u1edbc khi d\u1ef1 \u0111o\u00e1n \u1ea3nh.", "error");
-      return;
-    }
-
     try {
       const data = await postFile("/predict_image", file, pickedModel);
       const annotated = data.annotated_image || null;
@@ -701,17 +689,14 @@ predictBtn.addEventListener("click", async () => {
       }
 
       let cnnData = data.models?.cnn;
-      let mbData = data.models?.mobilenet;
       const det = data.main_detection || (Array.isArray(data.detections) && data.detections[0]);
       if (det) {
         cnnData = det.models?.cnn || cnnData;
-        mbData = det.models?.mobilenet || mbData;
       }
 
-      latestModels = { cnn: cnnData || null, mobilenet: mbData || null };
+      latestModels = { cnn: cnnData || null };
       latestAnnotatedImages = {
         cnn: data.annotated_images?.cnn || annotated || null,
-        mobilenet: data.annotated_images?.mobilenet || annotated || null,
       };
 
       updateCounts();
